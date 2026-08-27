@@ -52,6 +52,8 @@ set(RJ_OBJECT_LIBS
     rocjitsu_kmd
     rocjitsu_vm
     rocjitsu_vm_amdgpu
+    rocjitsu_timing_clock
+    rocjitsu_timing
     rocjitsu_plugin_logging
     rocjitsu_plugin_race_detector
     rocjitsu_plugin_throughput
@@ -561,6 +563,7 @@ add_executable(
     dbi/scalar_builders_test.cpp
     dbi/dbi_log_record_sim_test.cpp
     dbi/kernarg_sgpr_slot_test.cpp
+    timing/timing_model_test.cpp
     code/code_object_target_id_test.cpp
     code/executable_test.cpp
     code/file_loading_test.cpp
