@@ -39,6 +39,7 @@
 #include "rocjitsu/vm/plugins/execution_plugin.h"
 #include "rocjitsu/vm/plugins/memory_access_observation.h"
 #include "util/bit.h"
+#include "rocjitsu/vm/timing/collector.h"
 #include "util/log.h"
 
 #include <algorithm>
@@ -498,8 +499,13 @@ Wavefront *ComputeUnitCore::dispatch_wf_at(uint32_t wf_id, uint32_t wg_id, uint6
   if (wf_id >= config_.num_wf_slots || (wfs_[wf_id] && !wfs_[wf_id]->is_halted()))
     return nullptr;
 
-  if (!wfs_[wf_id])
+  if (!wfs_[wf_id]) {
     wfs_[wf_id] = create_wavefront(wf_id);
+    // Slots are created lazily; one created after the plane was installed
+    // needs its collector state before it can issue.
+    if (timing_ != nullptr)
+      timing_->attach(*wfs_[wf_id]);
+  }
   auto *wf = wfs_[wf_id].get();
   wf->activity_tracked_ = true;
   const uint32_t dispatched_wave_size = wave_size == 0 ? wf->default_wf_size_ : wave_size;
@@ -574,6 +580,20 @@ Wavefront *ComputeUnitCore::dispatch_wf_at(uint32_t wf_id, uint32_t wg_id, uint6
     wave_reservation_handler_(*wf);
   schedule_work();
   return wf;
+}
+
+void ComputeUnitCore::set_timing_collector(timing::TimingCollector *collector) {
+  timing_ = collector;
+  if (collector == nullptr)
+    return;
+  // Every slot, now, rather than at dispatch. The collector reads its
+  // wavefront-state slot on the issue path with no bounds check, so the storage
+  // behind it has to exist before a wavefront can execute, and growing it there
+  // would put an allocation on the hottest path the simulator has.
+  std::lock_guard<std::recursive_mutex> wave_state_lock(wave_state_mutex_);
+  for (auto &wf : wfs_)
+    if (wf)
+      collector->attach(*wf);
 }
 
 size_t ComputeUnitCore::num_wfs() const {
@@ -1036,6 +1056,8 @@ void ComputeUnitCore::notify_barrier_complete(std::span<Wavefront *> members,
     return;
   }
   plugin_group_->onAmdgpuBarrierResolved(members, kind);
+  if (timing_ != nullptr)
+    timing_->barrier_resolved(members);
 }
 
 uint32_t ComputeUnitCore::barrier_state(const Wavefront &wf, int32_t barrier_id) const {
@@ -2731,6 +2753,8 @@ ComputeUnitCore::issue_instruction_impl(Wavefront *active, MaybeAsyncWindow<Enab
       plugin_group_->onAmdgpuBeforeExecuteInstruction(
           active->pc, *inst, *active,
           std::span(words).first(std::max<size_t>(kFirstFetchWords, inst_size / 4)));
+    if (timing_ != nullptr)
+      timing_->before_execute(active->pc, *inst, *active);
   };
 
   // s_trap enters the per-process handler configured by SET_TRAP_HANDLER. The
@@ -2838,6 +2862,8 @@ ComputeUnitCore::issue_instruction_impl(Wavefront *active, MaybeAsyncWindow<Enab
 
   if (observes_after_execute_instruction_)
     plugin_group_->onAmdgpuAfterExecuteInstruction(active->pc, *inst, *active);
+  if (timing_ != nullptr)
+    timing_->after_execute(active->pc, *inst, *active);
 
   if constexpr (util::Logger::group_enabled(util::Logger::GROUP_VM)) {
     if (active->num_vgprs_ > 0) {

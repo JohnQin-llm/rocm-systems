@@ -10,6 +10,7 @@
 #include "rocjitsu/vm/amdgpu/gpu_vm.h"
 #include "rocjitsu/vm/amdgpu/hsa_clock.h"
 #include "rocjitsu/vm/amdgpu/pm4/pm4.h"
+#include "rocjitsu/vm/timing/collector.h"
 
 #include <algorithm>
 
@@ -287,6 +288,11 @@ void Wavefront::halt(CpCompletionNotice notice) {
   //       has_active_wfs() accurate so the last wave triggers LDS reclaim.
   // The halt hook also completes race events before release_wf can resolve a barrier.
   cu_.plugin_group().onAmdgpuWavefrontHalted(*this);
+  // Same moment, and for the same reason: the timing collector reports the
+  // terminator from here, because an s_endpgm with no outstanding waits halts
+  // inside execute_instruction and never reaches the after-execute hook.
+  if (timing::TimingCollector *timing = cu_.timing_collector(); timing != nullptr)
+    timing->wave_halted(*this);
   const uint32_t dispatch_id = dispatch_id_;
   const uint32_t wg_id = wg_id_;
   cu_.free_wavefront_resources(*this);

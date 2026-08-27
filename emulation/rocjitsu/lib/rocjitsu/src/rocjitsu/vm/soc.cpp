@@ -310,6 +310,12 @@ void SoC::apply_dispatch_threads() {
   dispatch_threads_ = effective_threads;
 }
 
+void SoC::set_timing_collector(timing::TimingCollector *collector) {
+  timing_collector_ = collector;
+  for (amdgpu::Xcd *xcd : xcds_)
+    xcd->set_timing_collector(collector);
+}
+
 void SoC::flush_all() {
   // Flush all per-CU L1 caches (invalidate, since L1 is write-through).
   for (auto *x : xcds_) {
