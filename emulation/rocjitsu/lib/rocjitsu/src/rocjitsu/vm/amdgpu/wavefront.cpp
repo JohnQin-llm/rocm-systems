@@ -138,13 +138,22 @@ void Wavefront::observe_lds_direct_read(uint32_t address, uint32_t bytes, uint32
 
 bool Wavefront::has_gpu_memory() const { return cu_.memory() != nullptr; }
 
-uint64_t Wavefront::shader_cycles() const { return cu_.cycle_count(); }
+uint64_t Wavefront::functional_cycles() const { return cu_.cycle_count(); }
+
+uint64_t Wavefront::shader_cycles() const {
+  // With a timing model installed the guest reads modelled cycles, the same
+  // clock behind its HIP event timestamps.
+  const auto &clock = SimulatedClock::instance();
+  return clock.is_simulated() ? clock.shader_cycles() : cu_.cycle_count();
+}
 
 uint64_t Wavefront::realtime_clock() const {
   return gpu_clock_from_ns(realtime_timestamp(), gpu_clock_mhz(cu_.arch()));
 }
 
 uint64_t Wavefront::realtime_timestamp() const {
+  if (SimulatedClock::instance().is_simulated())
+    return SimulatedClock::instance().nanoseconds();
   if (use_system_clock_)
     return hsa_system_timestamp();
   return cu_.model_realtime_timestamp() / (simdojo::TICKS_PER_SECOND / 1'000'000'000);

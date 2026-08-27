@@ -32,6 +32,7 @@
 #include "rocjitsu/vm/plugins/execution_plugin_group.h"
 #include "simdojo/components/register_file.h"
 #include "simdojo/components/vector_reg.h"
+#include "rocjitsu/vm/timing/simulated_clock.h"
 #include "util/bit.h"
 #include "util/diagnostic.h"
 #include "util/except.h"
@@ -2067,7 +2068,8 @@ inline void InstructionComputeUnitView::request_functional_yield() {
   raw_cu().request_functional_yield();
 }
 inline uint64_t InstructionComputeUnitView::shader_cycles() const {
-  return raw_cu().cycle_counter_;
+  const auto &clock = SimulatedClock::instance();
+  return clock.is_simulated() ? clock.shader_cycles() : raw_cu().cycle_counter_;
 }
 
 inline void InstructionComputeUnitView::notify_trap_complete(Wavefront &wf) {
