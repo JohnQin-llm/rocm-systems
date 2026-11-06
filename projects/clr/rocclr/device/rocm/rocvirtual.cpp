@@ -2478,6 +2478,20 @@ bool VirtualGPU::dispatchAqlPacketBatchFlat(const amd::AlignedVector64<uint8_t>&
     }
   }
 
+  // Completion signal the batch's last packet is published with. Every source of it is a
+  // host write (the flat buffer, or a signal attached below), so it is tracked here rather
+  // than read back from the ring: a ring in device memory costs a PCIe round trip per
+  // batch to read, and on the NT path the slot is write-combining.
+  uint64_t lastSignalHandle = reinterpret_cast<const hsa_kernel_dispatch_packet_t*>(
+      flatPacketData.data() + (numPackets - 1) * kPacketSize)->completion_signal.handle;
+  auto setPacketSignal = [&](hsa_kernel_dispatch_packet_t* pkt, hsa_signal_t signal,
+                             bool isLast) {
+    pkt->completion_signal = signal;
+    if (isLast) {
+      lastSignalHandle = signal.handle;
+    }
+  };
+
   // Attach profiling / completion signals to one packet and return the signal
   // that times it when this is a kernel dispatch. Used by the MOVDIR64B path,
   // which assembles the full packet (body + signal + valid header) in a host
@@ -2515,8 +2529,9 @@ bool VirtualGPU::dispatchAqlPacketBatchFlat(const amd::AlignedVector64<uint8_t>&
         const bool timing_only = !(isLast && (attach_signal || blocking));
         Barriers().ActiveSignal(kInitSignalValueOne, timestamp_, true, kInvalidAqlSlot, false,
                                 timing_only);
-        pkt->completion_signal =
-            Barriers().GetLastSignal()->PacketHandle(isKernelDispatch || BarrierTimestamps());
+        setPacketSignal(
+            pkt, Barriers().GetLastSignal()->PacketHandle(isKernelDispatch || BarrierTimestamps()),
+            isLast);
         if (isKernelDispatch || isBarrier) {
           if (isBaseKernelDispatch && amd::activity_prof::IsEnabled(OP_ID_DISPATCH)) {
             pkt->reserved2 = timestamp_->command().profilingInfo().correlation_id_;
@@ -2535,15 +2550,15 @@ bool VirtualGPU::dispatchAqlPacketBatchFlat(const amd::AlignedVector64<uint8_t>&
         if (it != prePatchedSignals.end()) {
           // Disabling nodes can move the signal off the packet it was patched for, so the
           // timestamp hint follows the packet that carries it now
-          pkt->completion_signal =
-              it->second->PacketHandle(isKernelDispatch || BarrierTimestamps());
+          setPacketSignal(pkt, it->second->PacketHandle(isKernelDispatch || BarrierTimestamps()),
+                          isLast);
           timestamp_->AddProfilingSignal(it->second);
           return (isKernelDispatch || isBarrier) ? it->second : nullptr;
         }
       }
     } else if (isLast && (attach_signal || blocking)) {
       Barriers().ActiveSignal();
-      pkt->completion_signal = Barriers().GetLastSignal()->PacketHandle(false);
+      setPacketSignal(pkt, Barriers().GetLastSignal()->PacketHandle(false), isLast);
     }
     return nullptr;
   };
@@ -2700,7 +2715,7 @@ bool VirtualGPU::dispatchAqlPacketBatchFlat(const amd::AlignedVector64<uint8_t>&
           queueBase + (chunkLastIndex & queueMask) * kPacketSize);
       if (isLastChunk && (attach_signal || blocking) && timestamp_ == nullptr) {
         Barriers().ActiveSignal();
-        lastSlotPtr->completion_signal = Barriers().GetLastSignal()->PacketHandle(false);
+        setPacketSignal(lastSlotPtr, Barriers().GetLastSignal()->PacketHandle(false), true);
       }
 
       // Per-packet fixups: profiling signals, kernel-name printing, inline barrier logging.
@@ -2778,22 +2793,19 @@ bool VirtualGPU::dispatchAqlPacketBatchFlat(const amd::AlignedVector64<uint8_t>&
 
   SetStateFlag(kHasPendingDispatch);
 
-  auto* finalLastSlot = reinterpret_cast<hsa_kernel_dispatch_packet_t*>(
-      queueBase + (lastIndex & queueMask) * kPacketSize);
-
   // Skip the pending dispatch only when both conditions are met: a completion
   // signal tracks the last packet and the fence is already clean (system scope).
-  if (finalLastSlot->completion_signal.handle != 0 && !isFenceDirty()) {
+  if (lastSignalHandle != 0 && !isFenceDirty()) {
     ClearStateFlag(kHasPendingDispatch);
   }
 
-  TrackQueueProgress(*finalLastSlot, lastIndex, pre_patched);
+  TrackQueueProgress(hsa_signal_t{lastSignalHandle}, lastIndex, pre_patched);
 
   if (blocking) {
     LogInfo("Running serialized as blocking is requested");
     if (!Barriers().WaitCurrent()) {
       LogPrintfError("Failed blocking queue wait with signal [0x%lx]",
-                     finalLastSlot->completion_signal.handle);
+                     lastSignalHandle);
       profilingEnd();
       return false;
     }
