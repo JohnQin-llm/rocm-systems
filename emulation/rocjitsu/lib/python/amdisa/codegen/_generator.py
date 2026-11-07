@@ -7551,7 +7551,11 @@ class CodeGenerator:
             gen_byte_nibble_conversion,
             gen_bit_pack,
             gen_fp8_widen,
+            gen_scaled_widen,
+            gen_wide_scaled_widen,
             gen_fp8_narrow,
+            gen_scaled_narrow,
+            gen_wide_scaled_narrow,
             gen_conversion64,
             gen_conversion32,
             gen_conversion16,
@@ -7654,7 +7658,11 @@ class CodeGenerator:
                 gen_conversion32,
                 gen_conversion64,
                 gen_fp8_narrow,
+                gen_scaled_narrow,
+                gen_wide_scaled_narrow,
                 gen_fp8_widen,
+                gen_scaled_widen,
+                gen_wide_scaled_widen,
                 gen_bit_pack,
                 gen_byte_nibble_conversion,
                 gen_float_unary32,
@@ -16864,6 +16872,7 @@ class CodeGenerator:
                     GFX10_LEGACY_FMA,
                     FP8_NARROW_NAMES,
                     FP8_WIDEN_NAMES,
+                    SCALED_WIDEN_NAMES,
                     MIXED_BF16_NAMES,
                     DOT2_F32_NAMES,
                     HALF_DOT_NAMES,
@@ -16873,6 +16882,8 @@ class CodeGenerator:
                 )
 
                 float_names = FLOAT_NAMES | GFX10_LEGACY_FMA
+                if self.isa_spec.arch_name == 'cdna4':
+                    float_names |= SCALED_WIDEN_NAMES
                 if self.isa_spec.arch_name in ('cdna3', 'cdna4', 'cdna5'):
                     float_names = FP8_NARROW_NAMES | FP8_WIDEN_NAMES
                     if self.isa_spec.arch_name == 'cdna5':
@@ -16917,6 +16928,62 @@ class CodeGenerator:
                     INTEGER_DOT_NAMES,
                 )
                 from amdisa.codegen.execute.rj_arith_scalar import SCALAR_NAMES
+                from amdisa.codegen.execute.rj_arith_float import (
+                    SCALED_FP6_WIDEN_NAMES,
+                    WIDE_SCALED_WIDEN_GFX1250_NAMES,
+                    SCALED_NARROW_NAMES,
+                    SCALED_FP6_NARROW_NAMES,
+                    WIDE_SCALED_NARROW_GFX1250_NAMES,
+                )
+
+                if (
+                    (
+                        self.isa_spec.arch_name == 'cdna4'
+                        and any(i.name in SCALED_FP6_WIDEN_NAMES for i in all_insts)
+                    )
+                    or (
+                        self.isa_spec.arch_name == 'cdna5'
+                        and any(
+                            i.name in WIDE_SCALED_WIDEN_GFX1250_NAMES for i in all_insts
+                        )
+                    )
+                    or (
+                        (
+                            self.isa_spec.arch_name in ('rdna3', 'rdna4')
+                            and any(i.name in FLOAT_NAMES for i in all_insts)
+                        )
+                        or (
+                            self.isa_spec.arch_name in ('cdna3', 'cdna4', 'cdna5')
+                            and any(i.name in FP8_NARROW_NAMES for i in all_insts)
+                        )
+                        or (
+                            self.isa_spec.arch_name == 'cdna4'
+                            and any(i.name in SCALED_NARROW_NAMES for i in all_insts)
+                        )
+                    )
+                ):
+                    cpp_includes.append(
+                        (
+                            'rocjitsu/isa/arch/amdgpu/shared/rj_arith_wide_conversion_exec.h',
+                            False,
+                        )
+                    )
+                if (
+                    self.isa_spec.arch_name == 'cdna4'
+                    and any(i.name in SCALED_FP6_NARROW_NAMES for i in all_insts)
+                ) or (
+                    self.isa_spec.arch_name == 'cdna5'
+                    and any(
+                        i.name in WIDE_SCALED_NARROW_GFX1250_NAMES for i in all_insts
+                    )
+                ):
+                    cpp_includes.append(
+                        (
+                            'rocjitsu/isa/arch/amdgpu/shared/rj_arith_wide_conversion_exec.h',
+                            False,
+                        )
+                    )
+                from amdisa.codegen.execute.rj_arith_vector import INTEGER_DOT_NAMES
 
                 if self.isa_spec.arch_name in ('cdna3', 'cdna4', 'cdna5') and any(
                     i.name in ('V_PK_FMA_F32', 'V_PK_ADD_F32', 'V_PK_MUL_F32')
