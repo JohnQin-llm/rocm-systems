@@ -16864,6 +16864,8 @@ class CodeGenerator:
                     GFX10_LEGACY_FMA,
                     FP8_NARROW_NAMES,
                     FP8_WIDEN_NAMES,
+                    BINARY_ARITHMETIC_F16,
+                    FMA_F16,
                     MIXED_BF16_NAMES,
                     DOT2_F32_NAMES,
                     HALF_DOT_NAMES,
@@ -16896,6 +16898,22 @@ class CodeGenerator:
                                 'V_MAD_MIXHI_F16',
                             }
                         )
+                if self.isa_spec.arch_name.startswith('cdna'):
+                    float_names |= (
+                        BINARY_ARITHMETIC_F16
+                        | FMA_F16
+                        | {
+                            'V_FREXP_EXP_I16_F16',
+                            'V_MAD_F16',
+                            'V_MAD_LEGACY_F16',
+                            'V_MADMK_F16',
+                            'V_MADAK_F16',
+                            'V_PK_FMAC_F16',
+                            'V_PK_ADD_F16',
+                            'V_PK_MUL_F16',
+                            'V_PK_FMA_F16',
+                        }
+                    )
                 if self.isa_spec.arch_name in (
                     'rdna2',
                     'rdna3',
