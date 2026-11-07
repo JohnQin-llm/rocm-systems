@@ -72,11 +72,13 @@ template <rocjitsu::arith::Fp64 Op>
 
 // Evaluate FP64 arithmetic or selection for the selected lanes. Reject invalid controls before
 // changing outputs.
-template <rocjitsu::arith::Fp64 Op, bool Rdna3 = false, bool Cdna = false>
+template <rocjitsu::arith::Fp64 Op, bool Rdna3 = false, bool NativeMath = false, bool Cdna = false>
 int fp64(uint64_t flags, uint32_t exec_mask, uint32_t instruction_flags, uint32_t *const *d,
          const uint32_t *const *a, const uint32_t *const *b, const uint32_t *const *c) {
-  if constexpr (Op == rocjitsu::arith::Fp64::Rcp || Op == rocjitsu::arith::Fp64::Rsq ||
-                Op == rocjitsu::arith::Fp64::Sqrt) {
+  // The RDNA empirical model does not describe CDNA's inherited host-double core.
+  if constexpr (!NativeMath &&
+                (Op == rocjitsu::arith::Fp64::Rcp || Op == rocjitsu::arith::Fp64::Rsq ||
+                 Op == rocjitsu::arith::Fp64::Sqrt)) {
     if (rocjitsu::arith::is_exact(flags)) {
       return fp64_exact<Op>(flags, exec_mask, instruction_flags, d, a, Rdna3);
     }
@@ -106,6 +108,11 @@ int fp64(uint64_t flags, uint32_t exec_mask, uint32_t instruction_flags, uint32_
   if constexpr (Rdna3) {
     instruction_flags = uint32_t(rocjitsu::arith::rdna3_output_modifiers(flags, instruction_flags));
   }
+  // CDNA reciprocal/root cores inherit Rocjitsu's denormal-preserving host model.
+  // Keep MODE for OMOD gating above, then disable arithmetic input/output flushing.
+  if constexpr (NativeMath) {
+    flags &= ~(RJ_ARITH_FP_FLUSH_INPUT_DENORMALS | RJ_ARITH_FP_FLUSH_OUTPUT_DENORMALS);
+  }
   // RCP overflow is independent of guest ROUND, including output scaling.
   if constexpr (Op == rocjitsu::arith::Fp64::Rcp) {
     flags &= ~RJ_ARITH_FP_ROUND_MASK;
@@ -114,11 +121,14 @@ int fp64(uint64_t flags, uint32_t exec_mask, uint32_t instruction_flags, uint32_
     return RJ_ARITH_SUCCESS;
   }
 #if defined(RJ_ARITH_HAVE_X86_64_V4)
-  if constexpr (Op == rocjitsu::arith::Fp64::Trunc || Op == rocjitsu::arith::Fp64::Ceil ||
-                Op == rocjitsu::arith::Fp64::Rndne || Op == rocjitsu::arith::Fp64::Floor ||
-                Op == rocjitsu::arith::Fp64::Fract || Op == rocjitsu::arith::Fp64::FrexpMant) {
+  if constexpr (NativeMath || Op == rocjitsu::arith::Fp64::Trunc ||
+                Op == rocjitsu::arith::Fp64::Ceil || Op == rocjitsu::arith::Fp64::Rndne ||
+                Op == rocjitsu::arith::Fp64::Floor || Op == rocjitsu::arith::Fp64::Fract ||
+                Op == rocjitsu::arith::Fp64::FrexpMant || Op == rocjitsu::arith::Fp64::Fma ||
+                Op == rocjitsu::arith::Fp64::Add || Op == rocjitsu::arith::Fp64::Mul) {
     if (rocjitsu::arith::cpu_level_at_least(flags, RJ_ARITH_CPU_X86_64_V4)) {
-      rocjitsu::arith::fp64_x86_64_v4(Op, flags, exec_mask, instruction_flags, d, a, b, c);
+      rocjitsu::arith::fp64_x86_64_v4(Op, flags, exec_mask, instruction_flags, d, a, b, c, Rdna3,
+                                      NativeMath, Cdna);
       return RJ_ARITH_SUCCESS;
     }
   }
@@ -126,7 +136,7 @@ int fp64(uint64_t flags, uint32_t exec_mask, uint32_t instruction_flags, uint32_
                 Op == rocjitsu::arith::Fp64::Mul) {
     if (rocjitsu::arith::cpu_level_at_least(flags, RJ_ARITH_CPU_X86_64_V4)) {
       rocjitsu::arith::fp64_x86_64_v4(Op, flags, exec_mask, instruction_flags, d, a, b, c, Rdna3,
-                                      Cdna);
+                                      NativeMath, Cdna);
       return RJ_ARITH_SUCCESS;
     }
   }
@@ -140,7 +150,7 @@ int fp64(uint64_t flags, uint32_t exec_mask, uint32_t instruction_flags, uint32_
   if ((!directed_arithmetic || !(flags & RJ_ARITH_FP_ROUND_MASK)) &&
       rocjitsu::arith::cpu_level_at_least(flags, RJ_ARITH_CPU_X86_64_V3)) {
     rocjitsu::arith::fp64_x86_64_v3(Op, flags, exec_mask, instruction_flags, d, a, b, c, Rdna3,
-                                    Cdna);
+                                    NativeMath, Cdna);
     return RJ_ARITH_SUCCESS;
   }
 #endif
@@ -282,9 +292,14 @@ int fp64(uint64_t flags, uint32_t exec_mask, uint32_t instruction_flags, uint32_
       value = rocjitsu::arith::as_double(rocjitsu::arith::selection_output<64>(
           rocjitsu::arith::double_bits(value), instruction_flags, flags));
     } else {
-      value = rocjitsu::arith::fp64_output(
-          value, preserve_nan ? instruction_flags & ~RJ_ARITH_ALU_CLAMP : instruction_flags,
-          unsigned((flags & RJ_ARITH_FP_ROUND_MASK) >> 24));
+      const uint32_t output_mode =
+          preserve_nan ? instruction_flags & ~RJ_ARITH_ALU_CLAMP : instruction_flags;
+      if constexpr (NativeMath) {
+        value = rocjitsu::arith::fp64_native_math_output(value, output_mode);
+      } else {
+        value = rocjitsu::arith::fp64_output(value, output_mode,
+                                             unsigned((flags & RJ_ARITH_FP_ROUND_MASK) >> 24));
+      }
     }
     // Selection preserves a selected subnormal; arithmetic/unary outputs flush.
     constexpr bool selection = rocjitsu::arith::is_selection(Op);
@@ -308,12 +323,12 @@ int fp64(uint64_t flags, uint32_t exec_mask, uint32_t instruction_flags, uint32_
 
 // Evaluate FP64 arithmetic or selection for Wave64. Reject invalid controls before changing
 // outputs.
-template <rocjitsu::arith::Fp64 Op, bool Rdna3 = false, bool Cdna = false>
+template <rocjitsu::arith::Fp64 Op, bool Rdna3 = false, bool NativeMath = false, bool Cdna = false>
 int fp64_wave64(uint64_t flags, uint64_t exec_mask, uint32_t instruction_flags, uint32_t *const *d,
                 const uint32_t *const *a, const uint32_t *const *b, const uint32_t *const *c) {
   // Validate before either Wave64 half can modify outputs, even when EXEC is empty.
-  if (int error =
-          fp64<Op, Rdna3, Cdna>(flags, 0, instruction_flags, nullptr, nullptr, nullptr, nullptr)) {
+  if (int error = fp64<Op, Rdna3, NativeMath, Cdna>(flags, 0, instruction_flags, nullptr, nullptr,
+                                                    nullptr, nullptr)) {
     return error;
   }
   if (!exec_mask) {
@@ -333,8 +348,8 @@ int fp64_wave64(uint64_t flags, uint64_t exec_mask, uint32_t instruction_flags, 
         z[word] = c[word] + half * 32;
       }
     }
-    if (int error = fp64<Op, Rdna3, Cdna>(flags, uint32_t(exec_mask >> (half * 32)),
-                                          instruction_flags, dest, x, y, z)) {
+    if (int error = fp64<Op, Rdna3, NativeMath, Cdna>(flags, uint32_t(exec_mask >> (half * 32)),
+                                                      instruction_flags, dest, x, y, z)) {
       return error;
     }
   }
@@ -1354,8 +1369,8 @@ int rj_arith_v_fmac_f64_w32_gfx942(uint64_t flags, uint32_t exec_mask, uint64_t 
   const uint32_t *accumulator[] = {d[0], d[1]};
   // CDNA retains a minimum-normal result reached by rounding before output flushing.
   flags = rocjitsu::arith::resolve_compatibility(flags, RJ_ARITH_SEMANTICS_LOOSE);
-  return fp64<rocjitsu::arith::Fp64::Fma, true, true>(flags, exec_mask, uint32_t(instruction_flags),
-                                                      d, a, b, accumulator);
+  return fp64<rocjitsu::arith::Fp64::Fma, true, false, true>(
+      flags, exec_mask, uint32_t(instruction_flags), d, a, b, accumulator);
 }
 
 // Fused A*B+D, retaining the inherited FMA rounding and output policy.
@@ -1376,7 +1391,7 @@ int rj_arith_v_fmac_f64_w64_gfx942(uint64_t flags, uint64_t exec_mask, uint64_t 
   const uint32_t *accumulator[] = {d[0], d[1]};
   // CDNA retains a minimum-normal result reached by rounding before output flushing.
   flags = rocjitsu::arith::resolve_compatibility(flags, RJ_ARITH_SEMANTICS_LOOSE);
-  return fp64_wave64<rocjitsu::arith::Fp64::Fma, true, true>(
+  return fp64_wave64<rocjitsu::arith::Fp64::Fma, true, false, true>(
       flags, exec_mask, uint32_t(instruction_flags), d, a, b, accumulator);
 }
 
@@ -1397,7 +1412,7 @@ int rj_arith_v_fmac_f64_w32_gfx1250(uint64_t flags, uint32_t exec_mask, uint64_t
   }
   const uint32_t *accumulator[] = {d[0], d[1]};
   flags = rocjitsu::arith::resolve_compatibility(flags, RJ_ARITH_SEMANTICS_LOOSE);
-  return fp64<rocjitsu::arith::Fp64::Fma, false, true>(
+  return fp64<rocjitsu::arith::Fp64::Fma, false, false, true>(
       flags, exec_mask, uint32_t(instruction_flags), d, a, b, accumulator);
 }
 
@@ -1442,6 +1457,141 @@ int rj_arith_v_fmaak_f64_w32_gfx1250(uint64_t flags, uint32_t exec_mask, uint64_
   return literal_fma64<false>(flags, exec_mask, instruction_flags, d, a, b, literal, state);
 }
 
+// Evaluate the inherited CDNA host-double rcp model without MODE denormal flushing.
+int rj_arith_v_rcp_f64_w32_gfx942(uint64_t flags, uint32_t exec_mask, uint64_t instruction_flags,
+                                  uint32_t *const *d, const uint32_t *const *a,
+                                  [[maybe_unused]] uint32_t *trapsts) {
+  flags = rocjitsu::arith::resolve_compatibility(flags, RJ_ARITH_SEMANTICS_LOOSE);
+  if (int error = rocjitsu::arith::validate_semantics(flags)) {
+    return error;
+  }
+  if (instruction_flags >> 32) {
+    return RJ_ARITH_ERROR_INVALID_FLAGS;
+  }
+  return fp64<rocjitsu::arith::Fp64::Rcp, true, true>(flags, exec_mask, uint32_t(instruction_flags),
+                                                      d, a, nullptr, nullptr);
+}
+
+// Evaluate the inherited CDNA host-double rcp model without MODE denormal flushing.
+int rj_arith_v_rcp_f64_w64_gfx942(uint64_t flags, uint64_t exec_mask, uint64_t instruction_flags,
+                                  uint32_t *const *d, const uint32_t *const *a,
+                                  [[maybe_unused]] uint32_t *trapsts) {
+  flags = rocjitsu::arith::resolve_compatibility(flags, RJ_ARITH_SEMANTICS_LOOSE);
+  if (int error = rocjitsu::arith::validate_semantics(flags)) {
+    return error;
+  }
+  if (instruction_flags >> 32) {
+    return RJ_ARITH_ERROR_INVALID_FLAGS;
+  }
+  return fp64_wave64<rocjitsu::arith::Fp64::Rcp, true, true>(
+      flags, exec_mask, uint32_t(instruction_flags), d, a, nullptr, nullptr);
+}
+
+// Evaluate the inherited CDNA host-double rcp model without MODE denormal flushing.
+int rj_arith_v_rcp_f64_w32_gfx1250(uint64_t flags, uint32_t exec_mask, uint64_t instruction_flags,
+                                   uint32_t *const *d, const uint32_t *const *a,
+                                   [[maybe_unused]] uint32_t *excp_flag_user) {
+  flags = rocjitsu::arith::resolve_compatibility(flags, RJ_ARITH_SEMANTICS_LOOSE);
+  if (int error = rocjitsu::arith::validate_semantics(flags)) {
+    return error;
+  }
+  if (instruction_flags >> 32) {
+    return RJ_ARITH_ERROR_INVALID_FLAGS;
+  }
+  return fp64<rocjitsu::arith::Fp64::Rcp, false, true>(
+      flags, exec_mask, uint32_t(instruction_flags), d, a, nullptr, nullptr);
+}
+
+// Evaluate the inherited CDNA host-double rsq model without MODE denormal flushing.
+int rj_arith_v_rsq_f64_w32_gfx942(uint64_t flags, uint32_t exec_mask, uint64_t instruction_flags,
+                                  uint32_t *const *d, const uint32_t *const *a,
+                                  [[maybe_unused]] uint32_t *trapsts) {
+  flags = rocjitsu::arith::resolve_compatibility(flags, RJ_ARITH_SEMANTICS_LOOSE);
+  if (int error = rocjitsu::arith::validate_semantics(flags)) {
+    return error;
+  }
+  if (instruction_flags >> 32) {
+    return RJ_ARITH_ERROR_INVALID_FLAGS;
+  }
+  return fp64<rocjitsu::arith::Fp64::Rsq, true, true>(flags, exec_mask, uint32_t(instruction_flags),
+                                                      d, a, nullptr, nullptr);
+}
+
+// Evaluate the inherited CDNA host-double rsq model without MODE denormal flushing.
+int rj_arith_v_rsq_f64_w64_gfx942(uint64_t flags, uint64_t exec_mask, uint64_t instruction_flags,
+                                  uint32_t *const *d, const uint32_t *const *a,
+                                  [[maybe_unused]] uint32_t *trapsts) {
+  flags = rocjitsu::arith::resolve_compatibility(flags, RJ_ARITH_SEMANTICS_LOOSE);
+  if (int error = rocjitsu::arith::validate_semantics(flags)) {
+    return error;
+  }
+  if (instruction_flags >> 32) {
+    return RJ_ARITH_ERROR_INVALID_FLAGS;
+  }
+  return fp64_wave64<rocjitsu::arith::Fp64::Rsq, true, true>(
+      flags, exec_mask, uint32_t(instruction_flags), d, a, nullptr, nullptr);
+}
+
+// Evaluate the inherited CDNA host-double rsq model without MODE denormal flushing.
+int rj_arith_v_rsq_f64_w32_gfx1250(uint64_t flags, uint32_t exec_mask, uint64_t instruction_flags,
+                                   uint32_t *const *d, const uint32_t *const *a,
+                                   [[maybe_unused]] uint32_t *excp_flag_user) {
+  flags = rocjitsu::arith::resolve_compatibility(flags, RJ_ARITH_SEMANTICS_LOOSE);
+  if (int error = rocjitsu::arith::validate_semantics(flags)) {
+    return error;
+  }
+  if (instruction_flags >> 32) {
+    return RJ_ARITH_ERROR_INVALID_FLAGS;
+  }
+  return fp64<rocjitsu::arith::Fp64::Rsq, false, true>(
+      flags, exec_mask, uint32_t(instruction_flags), d, a, nullptr, nullptr);
+}
+
+// Evaluate the inherited CDNA host-double sqrt model without MODE denormal flushing.
+int rj_arith_v_sqrt_f64_w32_gfx942(uint64_t flags, uint32_t exec_mask, uint64_t instruction_flags,
+                                   uint32_t *const *d, const uint32_t *const *a,
+                                   [[maybe_unused]] uint32_t *trapsts) {
+  flags = rocjitsu::arith::resolve_compatibility(flags, RJ_ARITH_SEMANTICS_LOOSE);
+  if (int error = rocjitsu::arith::validate_semantics(flags)) {
+    return error;
+  }
+  if (instruction_flags >> 32) {
+    return RJ_ARITH_ERROR_INVALID_FLAGS;
+  }
+  return fp64<rocjitsu::arith::Fp64::Sqrt, true, true>(
+      flags, exec_mask, uint32_t(instruction_flags), d, a, nullptr, nullptr);
+}
+
+// Evaluate the inherited CDNA host-double sqrt model without MODE denormal flushing.
+int rj_arith_v_sqrt_f64_w64_gfx942(uint64_t flags, uint64_t exec_mask, uint64_t instruction_flags,
+                                   uint32_t *const *d, const uint32_t *const *a,
+                                   [[maybe_unused]] uint32_t *trapsts) {
+  flags = rocjitsu::arith::resolve_compatibility(flags, RJ_ARITH_SEMANTICS_LOOSE);
+  if (int error = rocjitsu::arith::validate_semantics(flags)) {
+    return error;
+  }
+  if (instruction_flags >> 32) {
+    return RJ_ARITH_ERROR_INVALID_FLAGS;
+  }
+  return fp64_wave64<rocjitsu::arith::Fp64::Sqrt, true, true>(
+      flags, exec_mask, uint32_t(instruction_flags), d, a, nullptr, nullptr);
+}
+
+// Evaluate the inherited CDNA host-double sqrt model without MODE denormal flushing.
+int rj_arith_v_sqrt_f64_w32_gfx1250(uint64_t flags, uint32_t exec_mask, uint64_t instruction_flags,
+                                    uint32_t *const *d, const uint32_t *const *a,
+                                    [[maybe_unused]] uint32_t *excp_flag_user) {
+  flags = rocjitsu::arith::resolve_compatibility(flags, RJ_ARITH_SEMANTICS_LOOSE);
+  if (int error = rocjitsu::arith::validate_semantics(flags)) {
+    return error;
+  }
+  if (instruction_flags >> 32) {
+    return RJ_ARITH_ERROR_INVALID_FLAGS;
+  }
+  return fp64<rocjitsu::arith::Fp64::Sqrt, false, true>(
+      flags, exec_mask, uint32_t(instruction_flags), d, a, nullptr, nullptr);
+}
+
 // CDNA rounds before output flushing, preserving a rounded minimum-normal result.
 int rj_arith_v_mul_f64_w32_gfx942(uint64_t flags, uint32_t exec_mask, uint64_t instruction_flags,
                                   uint32_t *const *d, const uint32_t *const *a,
@@ -1453,8 +1603,8 @@ int rj_arith_v_mul_f64_w32_gfx942(uint64_t flags, uint32_t exec_mask, uint64_t i
   if (instruction_flags >> 32) {
     return RJ_ARITH_ERROR_INVALID_FLAGS;
   }
-  return fp64<rocjitsu::arith::Fp64::Mul, true, true>(flags, exec_mask, instruction_flags, d, a, b,
-                                                      nullptr);
+  return fp64<rocjitsu::arith::Fp64::Mul, true, false, true>(flags, exec_mask, instruction_flags, d,
+                                                             a, b, nullptr);
 }
 
 // CDNA rounds before output flushing, preserving a rounded minimum-normal result.
@@ -1469,8 +1619,8 @@ int rj_arith_v_mul_f64_w32_gfx1250(uint64_t flags, uint32_t exec_mask, uint64_t 
   if (instruction_flags >> 32) {
     return RJ_ARITH_ERROR_INVALID_FLAGS;
   }
-  return fp64<rocjitsu::arith::Fp64::Mul, false, true>(flags, exec_mask, instruction_flags, d, a, b,
-                                                       nullptr);
+  return fp64<rocjitsu::arith::Fp64::Mul, false, false, true>(flags, exec_mask, instruction_flags,
+                                                              d, a, b, nullptr);
 }
 
 // CDNA rounds before output flushing, preserving a rounded minimum-normal result.
@@ -1484,8 +1634,8 @@ int rj_arith_v_mul_f64_w64_gfx942(uint64_t flags, uint64_t exec_mask, uint64_t i
   if (instruction_flags >> 32) {
     return RJ_ARITH_ERROR_INVALID_FLAGS;
   }
-  return fp64_wave64<rocjitsu::arith::Fp64::Mul, true, true>(flags, exec_mask, instruction_flags, d,
-                                                             a, b, nullptr);
+  return fp64_wave64<rocjitsu::arith::Fp64::Mul, true, false, true>(
+      flags, exec_mask, instruction_flags, d, a, b, nullptr);
 }
 
 // CDNA rounds before output flushing, preserving a rounded minimum-normal result.
@@ -1500,8 +1650,8 @@ int rj_arith_v_mul_f64_w64_gfx1250(uint64_t flags, uint64_t exec_mask, uint64_t 
   if (instruction_flags >> 32) {
     return RJ_ARITH_ERROR_INVALID_FLAGS;
   }
-  return fp64_wave64<rocjitsu::arith::Fp64::Mul, false, true>(flags, exec_mask, instruction_flags,
-                                                              d, a, b, nullptr);
+  return fp64_wave64<rocjitsu::arith::Fp64::Mul, false, false, true>(
+      flags, exec_mask, instruction_flags, d, a, b, nullptr);
 }
 
 // CDNA rounds before output flushing, preserving a rounded minimum-normal result.
@@ -1516,8 +1666,8 @@ int rj_arith_v_fma_f64_w32_gfx942(uint64_t flags, uint32_t exec_mask, uint64_t i
   if (instruction_flags >> 32) {
     return RJ_ARITH_ERROR_INVALID_FLAGS;
   }
-  return fp64<rocjitsu::arith::Fp64::Fma, true, true>(flags, exec_mask, instruction_flags, d, a, b,
-                                                      c);
+  return fp64<rocjitsu::arith::Fp64::Fma, true, false, true>(flags, exec_mask, instruction_flags, d,
+                                                             a, b, c);
 }
 
 // CDNA rounds before output flushing, preserving a rounded minimum-normal result.
@@ -1532,8 +1682,8 @@ int rj_arith_v_fma_f64_w32_gfx1250(uint64_t flags, uint32_t exec_mask, uint64_t 
   if (instruction_flags >> 32) {
     return RJ_ARITH_ERROR_INVALID_FLAGS;
   }
-  return fp64<rocjitsu::arith::Fp64::Fma, false, true>(flags, exec_mask, instruction_flags, d, a, b,
-                                                       c);
+  return fp64<rocjitsu::arith::Fp64::Fma, false, false, true>(flags, exec_mask, instruction_flags,
+                                                              d, a, b, c);
 }
 
 // CDNA rounds before output flushing, preserving a rounded minimum-normal result.
@@ -1548,8 +1698,8 @@ int rj_arith_v_fma_f64_w64_gfx942(uint64_t flags, uint64_t exec_mask, uint64_t i
   if (instruction_flags >> 32) {
     return RJ_ARITH_ERROR_INVALID_FLAGS;
   }
-  return fp64_wave64<rocjitsu::arith::Fp64::Fma, true, true>(flags, exec_mask, instruction_flags, d,
-                                                             a, b, c);
+  return fp64_wave64<rocjitsu::arith::Fp64::Fma, true, false, true>(flags, exec_mask,
+                                                                    instruction_flags, d, a, b, c);
 }
 
 // CDNA rounds before output flushing, preserving a rounded minimum-normal result.
@@ -1564,6 +1714,6 @@ int rj_arith_v_fma_f64_w64_gfx1250(uint64_t flags, uint64_t exec_mask, uint64_t 
   if (instruction_flags >> 32) {
     return RJ_ARITH_ERROR_INVALID_FLAGS;
   }
-  return fp64_wave64<rocjitsu::arith::Fp64::Fma, false, true>(flags, exec_mask, instruction_flags,
-                                                              d, a, b, c);
+  return fp64_wave64<rocjitsu::arith::Fp64::Fma, false, false, true>(flags, exec_mask,
+                                                                     instruction_flags, d, a, b, c);
 }
