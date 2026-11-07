@@ -16864,6 +16864,11 @@ class CodeGenerator:
                     GFX10_LEGACY_FMA,
                     FP8_NARROW_NAMES,
                     FP8_WIDEN_NAMES,
+                    CDNA_BINARY_SELECTION,
+                    CDNA_HALF_SELECTION,
+                    PACKED_TERNARY_SELECTION,
+                    CDNA_TERNARY_SELECTION,
+                    TERNARY_SELECTION_RDNA4,
                     MIXED_BF16_NAMES,
                     DOT2_F32_NAMES,
                     HALF_DOT_NAMES,
@@ -16896,6 +16901,14 @@ class CodeGenerator:
                                 'V_MAD_MIXHI_F16',
                             }
                         )
+                if self.isa_spec.arch_name.startswith('cdna'):
+                    float_names |= (
+                        CDNA_BINARY_SELECTION
+                        | CDNA_HALF_SELECTION
+                        | PACKED_TERNARY_SELECTION
+                        | CDNA_TERNARY_SELECTION
+                        | TERNARY_SELECTION_RDNA4
+                    )
                 if self.isa_spec.arch_name in (
                     'rdna2',
                     'rdna3',
@@ -16906,6 +16919,15 @@ class CodeGenerator:
                 ) and any(i.name in float_names for i in all_insts):
                     cpp_includes.append(
                         ('rocjitsu/isa/arch/amdgpu/shared/rj_arith_float_exec.h', False)
+                    )
+                if self.isa_spec.arch_name in ('cdna3', 'cdna4') and any(
+                    i.name in {'V_MIN_F16', 'V_MAX_F16'} for i in all_insts
+                ):
+                    cpp_includes.append(
+                        (
+                            'rocjitsu/isa/arch/amdgpu/shared/rj_arith_cdna_selection_exec.h',
+                            False,
+                        )
                     )
                 from amdisa.codegen.execute.rj_arith_vector import (
                     VECTOR32_NAMES,
