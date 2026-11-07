@@ -3355,6 +3355,130 @@ TEST(ArithBridgeTest, PackedFmaRequiredStateAndRejectedCommit) {
   }
 }
 
+// DOT2 cancels before clamp; DOTC wraps through old D; gfx1250 DOT4 ignores clamp.
+// No lane consumes either SGPR data or carry-in, but the carry destination still clears.
+TEST(ArithBridgeTest, CdnaEmptyCarrySkipsScalarInputs) {
+  for (auto arch : {ROCJITSU_CODE_ARCH_CDNA3, ROCJITSU_CODE_ARCH_CDNA4, ROCJITSU_CODE_ARCH_CDNA5}) {
+    BridgeFixture fixture(arch, arch == ROCJITSU_CODE_ARCH_CDNA5 ? 32 : 64);
+    ASSERT_FALSE(::testing::Test::HasFatalFailure());
+    fixture.wave->set_exec(0);
+    const auto base = fixture.wave->sgpr_alloc().base;
+    fixture.cu->write_sgpr(base, ~0u);
+    fixture.cu->write_sgpr(base + 1, ~0u);
+    const auto words =
+        arch == ROCJITSU_CODE_ARCH_CDNA3
+            ? cdna3::build_vop3_sdst_enc(cdna3::kVAddcCoU32Vop3SdstEnc,
+                                         {.vdst = 4, .sdst = 0, .src0 = 8, .src1 = 257, .src2 = 10})
+        : arch == ROCJITSU_CODE_ARCH_CDNA4
+            ? cdna4::build_vop3_sdst_enc(cdna4::kVAddcCoU32Vop3SdstEnc,
+                                         {.vdst = 4, .sdst = 0, .src0 = 8, .src1 = 257, .src2 = 10})
+            : cdna5::build_vop3_sdst_enc(
+                  cdna5::kVAddCoCiU32Vop3SdstEnc,
+                  {.vdst = 4, .sdst = 0, .src0 = 8, .src1 = 257, .src2 = 10});
+    auto instruction = fixture.decoder->decode_window(words);
+    ASSERT_TRUE(instruction.succeeded());
+    fixture.recorder->scalar_reads.clear();
+    fixture.recorder->reads.clear();
+    fixture.recorder->writes.clear();
+    ASSERT_TRUE(
+        fixture.cu->execute_instruction(instruction.value().get(), *fixture.wave).succeeded());
+    EXPECT_TRUE(fixture.recorder->scalar_reads.empty());
+    EXPECT_TRUE(fixture.recorder->reads.empty());
+    EXPECT_TRUE(fixture.recorder->writes.empty());
+    EXPECT_EQ(fixture.cu->read_sgpr(base), 0u);
+    EXPECT_EQ(fixture.cu->read_sgpr(base + 1), arch == ROCJITSU_CODE_ARCH_CDNA5 ? ~0u : 0u);
+  }
+}
+
+TEST(ArithBridgeTest, CdnaDot2SelectsDistinctHalves) {
+  BridgeFixture fixture(ROCJITSU_CODE_ARCH_CDNA4, 64);
+  ASSERT_FALSE(::testing::Test::HasFatalFailure());
+  fixture.wave->set_exec(1);
+  fixture.cu->write_vgpr(fixture.base(), 0, 0x00030002);
+  fixture.cu->write_vgpr(fixture.base() + 1, 0, 0x00070005);
+  fixture.cu->write_vgpr(fixture.base() + 2, 0, 0);
+  const auto words = cdna4::build_vop3p(
+      cdna4::kVDot2I32I16Vop3p,
+      {.vdst = 2, .op_sel = 1, .src0 = 256, .src1 = 257, .src2 = 258, .op_sel_hi = 3});
+  auto instruction = fixture.decoder->decode_window(words);
+  ASSERT_TRUE(instruction.succeeded());
+  ASSERT_TRUE(
+      fixture.cu->execute_instruction(instruction.value().get(), *fixture.wave).succeeded());
+  EXPECT_EQ(fixture.cu->read_vgpr(fixture.base() + 2, 0), 36U); // 3*5 + 3*7
+}
+
+TEST(ArithBridgeTest, CdnaIntegerDotAccumulationAndClamp) {
+  for (auto arch : {ROCJITSU_CODE_ARCH_CDNA3, ROCJITSU_CODE_ARCH_CDNA4, ROCJITSU_CODE_ARCH_CDNA5}) {
+    for (auto semantics : {ArithmeticSemantics::Compatibility, ArithmeticSemantics::Loose}) {
+      for (int form = 0; form < (arch == ROCJITSU_CODE_ARCH_CDNA5 ? 1 : 3); ++form) {
+        ArithmeticPolicy policy{};
+        policy.semantics = semantics;
+        const int lanes = arch == ROCJITSU_CODE_ARCH_CDNA5 ? 32 : 64;
+        BridgeFixture fixture(arch, lanes, policy);
+        fixture.wave->set_exec(1ULL | (1ULL << (lanes - 1)));
+        fixture.wave->set_trapsts(0x10);
+        for (int lane = 0; lane < lanes; ++lane) {
+          fixture.cu->write_vgpr(fixture.base(), lane,
+                                 arch == ROCJITSU_CODE_ARCH_CDNA5 ? 0xffffffffU : 0x80008000U);
+          fixture.cu->write_vgpr(fixture.base() + 1, lane,
+                                 arch == ROCJITSU_CODE_ARCH_CDNA5 ? 0x01010101U : 0x80008000U);
+          fixture.cu->write_vgpr(fixture.base() + 2, lane,
+                                 arch == ROCJITSU_CODE_ARCH_CDNA5 ? 0xffffffffU : 0x80000000U);
+        }
+        std::vector<uint32_t> words;
+        if (arch == ROCJITSU_CODE_ARCH_CDNA5) {
+          const auto encoded = cdna5::build_vop3p(
+              cdna5::kVDot4U32U8Vop3p,
+              {.vdst = 2, .clamp = 1, .src0 = 256, .src1 = 257, .src2 = 258, .opsel_hi = 3});
+          words.assign(encoded.begin(), encoded.end());
+        } else if (form == 0) {
+          const auto encoded = arch == ROCJITSU_CODE_ARCH_CDNA3
+                                   ? cdna3::build_vop3p(cdna3::kVDot2I32I16Vop3p, {.vdst = 2,
+                                                                                   .clamp = 1,
+                                                                                   .src0 = 256,
+                                                                                   .src1 = 257,
+                                                                                   .src2 = 258,
+                                                                                   .op_sel_hi = 3})
+                                   : cdna4::build_vop3p(cdna4::kVDot2I32I16Vop3p, {.vdst = 2,
+                                                                                   .clamp = 1,
+                                                                                   .src0 = 256,
+                                                                                   .src1 = 257,
+                                                                                   .src2 = 258,
+                                                                                   .op_sel_hi = 3});
+          words.assign(encoded.begin(), encoded.end());
+        } else if (form == 1) {
+          const auto encoded = arch == ROCJITSU_CODE_ARCH_CDNA3
+                                   ? cdna3::build_vop2(cdna3::kVDot2cI32I16Vop2,
+                                                       {.src0 = 256, .vsrc1 = 1, .vdst = 2})
+                                   : cdna4::build_vop2(cdna4::kVDot2cI32I16Vop2,
+                                                       {.src0 = 256, .vsrc1 = 1, .vdst = 2});
+          words.assign(encoded.begin(), encoded.end());
+        } else {
+          const auto encoded = arch == ROCJITSU_CODE_ARCH_CDNA3
+                                   ? cdna3::build_vop3(cdna3::kVDot2cI32I16Vop3,
+                                                       {.vdst = 2, .src0 = 256, .src1 = 257})
+                                   : cdna4::build_vop3(cdna4::kVDot2cI32I16Vop3,
+                                                       {.vdst = 2, .src0 = 256, .src1 = 257});
+          words.assign(encoded.begin(), encoded.end());
+        }
+        auto instruction = fixture.decoder->decode_window(words);
+        ASSERT_TRUE(instruction.succeeded());
+        ASSERT_TRUE(
+            fixture.cu->execute_instruction(instruction.value().get(), *fixture.wave).succeeded());
+        for (int lane = 0; lane < lanes; ++lane) {
+          const bool active = lane == 0 || lane == lanes - 1;
+          const uint32_t expected = arch == ROCJITSU_CODE_ARCH_CDNA5
+                                        ? (active ? 1019U : 0xffffffffU)
+                                        : (active ? 0U : 0x80000000U);
+          EXPECT_EQ(fixture.cu->read_vgpr(fixture.base() + 2, lane), expected)
+              << arch << " " << form << " " << lane;
+        }
+        EXPECT_EQ(fixture.wave->trapsts(), 0x10U);
+      }
+    }
+  }
+}
+
 TEST(ArithBridgeTest, DecodedIntegerDotSignednessSaturationAndAliases) {
   const uint16_t rdna3_opcodes[] = {rdna3::kVDot4I32Iu8Vop3p, rdna3::kVDot4U32U8Vop3p,
                                     rdna3::kVDot8I32Iu4Vop3p, rdna3::kVDot8U32U4Vop3p};
