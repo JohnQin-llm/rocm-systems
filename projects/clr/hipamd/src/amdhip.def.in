@@ -542,6 +542,7 @@ hipExtSetLoggingParams
 hipMemSetMemPool
 hipMemGetMemPool
 hipMipmappedArrayGetMemoryRequirements
+hipArrayGetMemoryRequirements
 hipKernelGetAttribute
 hipKernelSetAttribute
 hipKernelSetAttributeForDevice
