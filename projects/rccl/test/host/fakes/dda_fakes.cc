@@ -12,6 +12,7 @@
 #include "algorithms/dda/all_gather/dda_all_gather.h"
 #include "algorithms/dda/all_reduce/dda_all_reduce.h"
 #include "algorithms/dda/alltoall/dda_alltoall.h"
+#include "algorithms/dda/ipc/ipc_init.h"
 #include "algorithms/dda/reduce_scatter/dda_reduce_scatter.h"
 #include "fail_loud.h"
 #include "signature-drift.h"
@@ -31,6 +32,19 @@
     return g_##hook(comm, send, recv, count, type);                                                       \
   }
 
+#define DEFINE_DDA_REDUCTION_SHAPE(hook, prod)                                                            \
+  std::function<bool(ncclComm*, size_t, ncclDataType_t, ncclRedOp_t)> g_##hook =                          \
+      [](ncclComm*, size_t, ncclDataType_t, ncclRedOp_t) { return false; };                              \
+  bool prod(ncclComm* comm, size_t count, ncclDataType_t type, ncclRedOp_t op) {                         \
+    return g_##hook(comm, count, type, op);                                                               \
+  }
+
+#define DEFINE_DDA_SHAPE(hook, prod)                                                                      \
+  std::function<bool(ncclComm*, size_t, ncclDataType_t)> g_##hook = [](ncclComm*, size_t, ncclDataType_t) { \
+    return false;                                                                                         \
+  };                                                                                                     \
+  bool prod(ncclComm* comm, size_t count, ncclDataType_t type) { return g_##hook(comm, count, type); }
+
 #define DEFINE_DDA_BLOCKS(hook, prod, sentinel)                                                           \
   std::function<uint32_t(ncclComm*, size_t, ncclDataType_t)> g_##hook =                                  \
       [](ncclComm*, size_t, ncclDataType_t) { return sentinel; };                                        \
@@ -46,6 +60,7 @@
   ASSERT_HOOK_MATCHES_PROD(g_##hook, prod);
 
 DEFINE_DDA_REDUCTION_ELIGIBLE(allReduceDdaIpcEligible, ncclAllReduceDdaIpcEligible)
+DEFINE_DDA_REDUCTION_SHAPE(allReduceDdaIpcShapeEligible, ncclAllReduceDdaIpcShapeEligible)
 DEFINE_DDA_REDUCTION_ELIGIBLE(allReduceDdaFabricEligible, ncclAllReduceDdaFabricEligible)
 DEFINE_DDA_REDUCTION_ELIGIBLE(allReduceDdaFabricLLEligible, ncclAllReduceDdaFabricLLEligible)
 DEFINE_DDA_REDUCTION_ELIGIBLE(allReduceDdaFabricLL128Eligible, ncclAllReduceDdaFabricLL128Eligible)
@@ -55,6 +70,7 @@ DEFINE_DDA_CAPPED_BLOCKS(allReduceDdaFabricLLBlocks, ncclAllReduceDdaFabricLLBlo
 DEFINE_DDA_CAPPED_BLOCKS(allReduceDdaFabricLL128Blocks, ncclAllReduceDdaFabricLL128Blocks, 114)
 
 DEFINE_DDA_ALLGATHER_ELIGIBLE(allGatherDdaIpcEligible, ncclAllGatherDdaIpcEligible)
+DEFINE_DDA_SHAPE(allGatherDdaIpcShapeEligible, ncclAllGatherDdaIpcShapeEligible)
 DEFINE_DDA_ALLGATHER_ELIGIBLE(allGatherDdaFabricEligible, ncclAllGatherDdaFabricEligible)
 DEFINE_DDA_ALLGATHER_ELIGIBLE(allGatherDdaFabricLLEligible, ncclAllGatherDdaFabricLLEligible)
 DEFINE_DDA_ALLGATHER_ELIGIBLE(allGatherDdaFabricLL128Eligible, ncclAllGatherDdaFabricLL128Eligible)
@@ -66,6 +82,7 @@ DEFINE_DDA_BLOCKS(allGatherDdaFabricLL128Blocks, ncclAllGatherDdaFabricLL128Bloc
 // AlltoAll takes the same operand shape as AllGather (no reduction op), so it
 // reuses that macro.
 DEFINE_DDA_ALLGATHER_ELIGIBLE(allToAllDdaIpcEligible, ncclAllToAllDdaIpcEligible)
+DEFINE_DDA_SHAPE(allToAllDdaIpcShapeEligible, ncclAllToAllDdaIpcShapeEligible)
 DEFINE_DDA_ALLGATHER_ELIGIBLE(allToAllDdaFabricEligible, ncclAllToAllDdaFabricEligible)
 DEFINE_DDA_ALLGATHER_ELIGIBLE(allToAllDdaFabricLLEligible, ncclAllToAllDdaFabricLLEligible)
 DEFINE_DDA_ALLGATHER_ELIGIBLE(allToAllDdaFabricLL128Eligible, ncclAllToAllDdaFabricLL128Eligible)
@@ -75,6 +92,7 @@ DEFINE_DDA_BLOCKS(allToAllDdaFabricLLBlocks, ncclAllToAllDdaFabricLLBlocks, 143)
 DEFINE_DDA_BLOCKS(allToAllDdaFabricLL128Blocks, ncclAllToAllDdaFabricLL128Blocks, 144)
 
 DEFINE_DDA_REDUCTION_ELIGIBLE(reduceScatterDdaIpcEligible, ncclReduceScatterDdaIpcEligible)
+DEFINE_DDA_REDUCTION_SHAPE(reduceScatterDdaIpcShapeEligible, ncclReduceScatterDdaIpcShapeEligible)
 DEFINE_DDA_REDUCTION_ELIGIBLE(reduceScatterDdaFabricEligible, ncclReduceScatterDdaFabricEligible)
 DEFINE_DDA_REDUCTION_ELIGIBLE(reduceScatterDdaFabricLLEligible, ncclReduceScatterDdaFabricLLEligible)
 DEFINE_DDA_REDUCTION_ELIGIBLE(reduceScatterDdaFabricLL128Eligible, ncclReduceScatterDdaFabricLL128Eligible)
@@ -130,9 +148,15 @@ DEFINE_DDA_REDUCE_LAUNCH(reduceScatterDdaFabric, ncclReduceScatterDdaFabric)
 DEFINE_DDA_REDUCE_LAUNCH(reduceScatterDdaFabricLL, ncclReduceScatterDdaFabricLL)
 DEFINE_DDA_REDUCE_LAUNCH(reduceScatterDdaFabricLL128, ncclReduceScatterDdaFabricLL128)
 
+std::function<ncclResult_t(ncclComm*, bool)> g_ddaIpcEnsureInit = [](ncclComm*, bool) { return ncclSuccess; };
+ncclResult_t ncclDdaIpcEnsureInit(ncclComm* comm, bool capturing) { return g_ddaIpcEnsureInit(comm, capturing); }
+ASSERT_HOOK_MATCHES_PROD(g_ddaIpcEnsureInit, ncclDdaIpcEnsureInit);
+
 #undef DEFINE_DDA_REDUCE_LAUNCH
 #undef DEFINE_DDA_LAUNCH
 #undef ASSERT_HOOK_MATCHES_PROD
 #undef DEFINE_DDA_BLOCKS
+#undef DEFINE_DDA_SHAPE
+#undef DEFINE_DDA_REDUCTION_SHAPE
 #undef DEFINE_DDA_ALLGATHER_ELIGIBLE
 #undef DEFINE_DDA_REDUCTION_ELIGIBLE
