@@ -164,6 +164,39 @@ constexpr uint64_t valu_swap_write_lanes(uint64_t exec, unsigned wave_size, unsi
   return exec & wave & (upper ? lower << stride : lower);
 }
 
+/// E8M0 scale location for a CDNA5 V_CVT_SCALE_PK widening conversion.
+struct CvtScaleSelection {
+  uint8_t lane_base;
+  uint8_t first_byte;
+  uint8_t byte_step;
+
+  // CDNA5 ISA 7.6.3, Table 36. In Block16 the data half-wave selects
+  // a pair of bytes; in Block32 it selects a byte within the pair.
+  static constexpr CvtScaleSelection f4_f6(unsigned opsel) {
+    const auto base = static_cast<uint8_t>((opsel & 1) * 16);
+    const auto pair = static_cast<uint8_t>(opsel & 2);
+    if (opsel & 4)
+      return {base, static_cast<uint8_t>(pair / 2), 2};
+    return {base, pair, 1};
+  }
+
+  // Table 37. Block32 broadcasts one byte to both data half-waves.
+  // Block16 specifies selectors 8..11; selectors 12..15 are reserved.
+  static constexpr CvtScaleSelection f8(unsigned opsel) {
+    if (opsel & 8) {
+      const auto pair = static_cast<uint8_t>(opsel & 2);
+      return {static_cast<uint8_t>(pair * 8), pair, 1};
+    }
+    return {static_cast<uint8_t>((opsel & 1) * 16),
+            static_cast<uint8_t>((opsel & 2) | ((opsel >> 2) & 1)), 0};
+  }
+
+  constexpr unsigned lane(unsigned data_lane) const { return (data_lane & ~16u) | lane_base; }
+  constexpr unsigned byte(unsigned data_lane) const {
+    return first_byte + ((data_lane & 16) ? byte_step : 0);
+  }
+};
+
 /// @brief Decoded register-access modifiers.
 /// @details This view contains no wave state or values.
 struct RegisterModifiers {
@@ -171,7 +204,8 @@ struct RegisterModifiers {
   ValuPermutation valu_permutation = ValuPermutation::None;
   uint16_t ds_offset = 0;
   uint8_t memory_result_bytes = 0xf;
-  uint8_t memory_result_last_bytes = 0xf; // Last data word, excluding optional image status.
+  uint8_t memory_result_last_bytes = 0xf;     // Last data word, excluding optional image status.
+  std::optional<CvtScaleSelection> cvt_scale; // Widening conversion scale in SRC1.
   bool memory_result_has_status = false;
   void set_packed_image_result(unsigned components, unsigned result_words) {
     if (components & 1u) {

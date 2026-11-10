@@ -4263,6 +4263,20 @@ TEST(MemoryWaitFootprintTest, NarrowDsAndBufferStoresCheckOnlyConsumedBytes) {
   check_vector_footprints(ROCJITSU_CODE_ARCH_RDNA3, 32, 16, cases);
 }
 
+TEST(MemoryWaitFootprintTest, PackedConversionTracksSelectedScaleLanesAndBytes) {
+  std::vector<std::vector<uint32_t>> cases;
+  for (uint8_t opsel : {0, 1, 4, 6, 10}) {
+    for (uint16_t opcode : {cdna5::kVCvtScalePk8F32Fp4Vop3, cdna5::kVCvtScalePk8F32Fp8Vop3}) {
+      if (opcode == cdna5::kVCvtScalePk8F32Fp4Vop3 && opsel >= 8)
+        continue;
+      const auto words =
+          cdna5::build_vop3(opcode, {.vdst = 8, .opsel = opsel, .src0 = 256, .src1 = 258});
+      cases.emplace_back(words.begin(), words.end());
+    }
+  }
+  check_vector_footprints(ROCJITSU_CODE_ARCH_CDNA5, 32, 16, cases);
+}
+
 TEST(MemoryWaitFootprintTest, WriteLaneChecksOnlyTheSelectedDestinationLane) {
   for (auto arch : {ROCJITSU_CODE_ARCH_RDNA3, ROCJITSU_CODE_ARCH_RDNA3_5, ROCJITSU_CODE_ARCH_RDNA4,
                     ROCJITSU_CODE_ARCH_CDNA5}) {

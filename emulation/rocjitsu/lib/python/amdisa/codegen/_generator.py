@@ -12215,6 +12215,17 @@ class CodeGenerator:
                                 access_conditions.append(
                                     'modifiers.flat_offset = inst_.offset & 0xfff;'
                                 )
+                        if inst_sem.semantic_class == 'vector_cvt_scale' and (
+                            inst_sem.operation or ''
+                        ).startswith('unpack_'):
+                            fmt = (
+                                'f8'
+                                if inst_sem.operation.endswith(('fp8', 'bf8'))
+                                else 'f4_f6'
+                            )
+                            access_conditions.append(
+                                f'modifiers.cvt_scale = amdgpu::CvtScaleSelection::{fmt}(inst_.opsel);'
+                            )
                         valu_permutations = {
                             'vector_permlane16': (
                                 'Perm16Var' if inst_sem.operation == 'var' else 'Perm16'
