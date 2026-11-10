@@ -148,7 +148,9 @@ DEFINE_DDA_REDUCE_LAUNCH(reduceScatterDdaFabric, ncclReduceScatterDdaFabric)
 DEFINE_DDA_REDUCE_LAUNCH(reduceScatterDdaFabricLL, ncclReduceScatterDdaFabricLL)
 DEFINE_DDA_REDUCE_LAUNCH(reduceScatterDdaFabricLL128, ncclReduceScatterDdaFabricLL128)
 
-std::function<ncclResult_t(ncclComm*, bool)> g_ddaIpcEnsureInit = [](ncclComm*, bool) { return ncclSuccess; };
+std::function<ncclResult_t(ncclComm*, bool)> g_ddaIpcEnsureInit = [](ncclComm*, bool) -> ncclResult_t {
+  FailLoudUnfaked("dda_fakes", "ncclDdaIpcEnsureInit");
+};
 ncclResult_t ncclDdaIpcEnsureInit(ncclComm* comm, bool capturing) { return g_ddaIpcEnsureInit(comm, capturing); }
 ASSERT_HOOK_MATCHES_PROD(g_ddaIpcEnsureInit, ncclDdaIpcEnsureInit);
 
