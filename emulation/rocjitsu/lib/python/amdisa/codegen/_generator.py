@@ -8466,25 +8466,47 @@ class CodeGenerator:
             return '\n'.join(L)
 
         if cls == 'wait_counter':
-            # RDNA4 split-wait instructions: the immediate operand is
-            # the counter threshold directly (no bit-packing).
-            L.append(
-                f'  uint16_t cnt = static_cast<uint16_t>({src_ops[0]}.encoding_value_);'
-            )
-            if op == 'waitcnt_vscnt':
-                L.append('  wf.set_wait_target_vscnt(static_cast<uint8_t>(cnt));')
-            elif op == 'waitcnt_vmcnt':
-                L.append('  wf.set_wait_target_loadcnt(static_cast<uint8_t>(cnt));')
-            elif op == 'waitcnt_expcnt':
-                L.append('  wf.set_wait_counter("wait_expcnt", cnt);')
-            elif op == 'waitcnt_lgkmcnt':
-                L.append('  const auto current_wait = wf.wait_target();')
-                L.append(
-                    '  wf.set_wait_target(current_wait.vmcnt, static_cast<uint8_t>(cnt), current_wait.expcnt);'
+            if op.startswith('waitcnt_'):
+                field = op.removeprefix('waitcnt_')
+                # RDNA1 and RDNA2 ISA, SOPK S_WAITCNT_*: the comparison is
+                # counter-width (three or six bits), without clamping on carry.
+                # On GFX11 the encoding requires the NULL scalar operand.
+                mask = f'amdgpu::WaitCounters::{field.upper()}_MAX'
+                scalar_part = (
+                    'amdgpu::RegisterAccess(wf).read_scalar(sdst) + '
+                    if self.isa_spec.profile.waitcnt_family == 'gfx10'
+                    else ''
                 )
-            else:
-                L.append(f'  wf.set_wait_counter("{op}", cnt);')
-            return '\n'.join(L)
+                return (
+                    '  const uint32_t threshold = '
+                    + scalar_part
+                    + 'static_cast<uint32_t>(simm16.encoding_value_);\n'
+                    f'  wf.wait_for({{.{field} = static_cast<uint8_t>(threshold & {mask})}});'
+                )
+            # GFX12 encodes the sole or final threshold in the low byte.
+            # Combined waits encode the load/store threshold in the high byte.
+            fields = {
+                'wait_loadcnt': ('vmcnt',),
+                'wait_storecnt': ('vscnt',),
+                'wait_expcnt': ('expcnt',),
+                'wait_dscnt': ('dscnt',),
+                'wait_kmcnt': ('kmcnt',),
+                'wait_tensorcnt': ('tensorcnt',),
+                'wait_asynccnt': ('asynccnt',),
+                'wait_samplecnt': ('samplecnt',),
+                'wait_bvhcnt': ('bvhcnt',),
+                'wait_loadcnt_dscnt': ('vmcnt', 'dscnt'),
+                'wait_storecnt_dscnt': ('vscnt', 'dscnt'),
+            }[op]
+            targets = []
+            for i, field in enumerate(fields):
+                value = 'imm' if i == len(fields) - 1 else '(imm >> 8)'
+                mask = f'amdgpu::WaitCounters::{field.upper()}_MAX'
+                targets.append(f'.{field} = static_cast<uint8_t>({value} & {mask})')
+            return (
+                f'  const uint16_t imm = static_cast<uint16_t>({src_ops[0]}.encoding_value_);\n'
+                f'  wf.wait_for({{{", ".join(targets)}}});'
+            )
 
         if cls == 'tensor_load_to_lds':
             return (
