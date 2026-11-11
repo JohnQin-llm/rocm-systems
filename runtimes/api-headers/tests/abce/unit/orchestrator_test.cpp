@@ -327,6 +327,27 @@ TEST(Gfx125PlusSignals, TheArmedCountMatchesEverySignalUpdateTheFramesMake) {
   }
 }
 
+// A signal in device memory needs its coordination store read back before the
+// doorbell; the flag rides from the signal reference into the plan, and submit
+// still arms the word for the fan-out.
+TEST(Gfx125PlusSignals, ADeviceMemorySignalIsReadBackAfterArming) {
+  MapperOptions options;
+  options.num_engines = 4;
+  abce_platform_caps_t caps = abce_detect_default_platform_caps(IsaByName("gfx1250").isa);
+  caps.emit_hdp_flush = false;
+  options.caps = caps;
+  Mapper mapper(IsaByName("gfx1250"), options);
+  abce_copy_metadata_t metadata = mapper.NewMetadata();
+  metadata.out.host_store_readback = true;
+  abce_plan_t plan;
+  ASSERT_EQ(mapper.Map(MakeLinearBatch(4, 1 * kMiB), metadata, &plan), ABCE_STATUS_OK);
+  ASSERT_EQ(plan.num_frames, 4u);
+  ASSERT_TRUE(plan.multi);
+  EXPECT_TRUE(plan.coordination_readback);
+  ASSERT_EQ(mapper.Submit(&plan), ABCE_STATUS_OK);
+  EXPECT_EQ(mapper.signal().value, plan.fan_in_count);
+}
+
 TEST(Gfx125PlusSignals, ABackToBackBatchSignalsOnEveryCopy) {
   MapperOptions options;
   options.num_engines = 4;
@@ -382,6 +403,25 @@ TEST(Placement, ExplicitModesOverrideTheSizeRule) {
   EXPECT_EQ(FramesFor(mapper, MakeLinearBatch(64, 64 * kKiB), ABCE_LINEAR_BATCH_MODE_FORCE_BACK_TO_BACK),
             1u);
   EXPECT_GT(FramesFor(mapper, MakeLinearBatch(8, 4 * kKiB), ABCE_LINEAR_BATCH_MODE_FORCE_FAN_OUT), 1u);
+}
+
+// gfx125+ fused copies signal one by one, so sharing a ring serializes them: an
+// automatic batch fans out at any total and copy count, two copies included, and
+// only an explicit mode keeps it on one.
+TEST(Placement, Gfx1250FansOutSmallBatchesUnlessForced) {
+  MapperOptions options;
+  options.num_engines = 4;
+  Mapper mapper(IsaByName("gfx1250"), options);
+  EXPECT_EQ(FramesFor(mapper, MakeLinearBatch(2, 4 * kKiB)), 2u);
+  EXPECT_EQ(FramesFor(mapper, MakeLinearBatch(3, 16 * kKiB)), 3u);
+  EXPECT_EQ(FramesFor(mapper, MakeLinearBatch(4, 4 * kKiB)), 4u);
+  EXPECT_EQ(FramesFor(mapper, MakeLinearBatch(4, 64 * kKiB)), 4u);
+  EXPECT_EQ(FramesFor(mapper, MakeLinearBatch(4, 4 * kKiB), ABCE_LINEAR_BATCH_MODE_FORCE_BACK_TO_BACK),
+            1u);
+
+  Mapper gfx942_mapper(IsaByName("gfx942"), options);
+  EXPECT_EQ(FramesFor(gfx942_mapper, MakeLinearBatch(2, 4 * kKiB)), 1u)
+      << "before gfx125 the same two copies stay back-to-back";
 }
 
 TEST(Placement, ALoneCopyIsNeverTreatedAsABatch) {
