@@ -635,6 +635,10 @@ public:
   [[nodiscard]] AddressSpaceInfo info() const { return info_; }
   /// @brief Whether invalidation, unregister, or reset permanently retired this snapshot.
   [[nodiscard]] bool revoked() const;
+  /// @brief Whether this binding raises a VM fault event for its failed translations.
+  /// @details Without a reporter, a terminal fault reaches no runtime event, so
+  /// its issuer must notify the queue owner directly.
+  [[nodiscard]] bool reports_faults() const;
   [[nodiscard]] VmCacheNamespace cache_namespace() const {
     return {.address_space = address_space_, .translation_epoch = info_.translation_epoch};
   }
