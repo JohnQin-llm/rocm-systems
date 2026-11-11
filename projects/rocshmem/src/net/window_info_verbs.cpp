@@ -22,8 +22,7 @@
 
 #include "net/window_info_verbs.hpp"
 
-#include <cstdio>
-
+#include "log.hpp"
 #include "rocshmem/rocshmem_common.hpp"  // ROCSHMEM_SIGNAL_OPS, rocshmem_cmps
 
 namespace rocshmem {
@@ -56,8 +55,8 @@ void WindowInfoVerbs::wait_all() {
     int n = rma_->poll(ctx_, wc, 16);
     for (int i = 0; i < n; i++) {
       if (wc[i].status != IBV_WC_SUCCESS) {
-        fprintf(stderr, "[rocSHMEM] host-verbs: WC error status=%d wr_id=%lu\n",
-                wc[i].status, static_cast<unsigned long>(wc[i].wr_id));
+        LOG_ERROR("host-verbs: WC error status=%d wr_id=%lu",
+                  wc[i].status, static_cast<unsigned long>(wc[i].wr_id));
       }
       if (outstanding_ > 0) {
         outstanding_--;
@@ -149,7 +148,7 @@ void WindowInfoVerbs::post_signal(int lane, uint64_t *sig_addr, uint64_t signal,
       outstanding_++;
       break;
     default:
-      fprintf(stderr, "[rocSHMEM] host-verbs: invalid sig_op %d\n", sig_op);
+      LOG_ERROR("host-verbs: invalid sig_op %d", sig_op);
       break;
   }
 }
