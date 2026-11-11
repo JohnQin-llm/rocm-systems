@@ -102,11 +102,12 @@ ncclResult_t RecordSim(ModelKind kind, struct ncclTuningResult_t* tuning) {
 // Name is both the production symbol infix and the ModelKind enumerator; the five match
 // exactly, so one parameter cannot be paired with the wrong family.
 #define DEFINE_MODEL_FAKE(Name) \
-  ncclResult_t ncclTuning##Name##ModelInit(struct ncclComm*, int id, int[NCCL_NUM_FUNCTIONS]) { \
+  ncclResult_t ncclTuning##Name##ModelInit(struct ncclComm*, int id, int[NCCL_NUM_FUNCTIONS], \
+                                           struct ncclTuningModelState*) { \
     return RecordInit(id); \
   } \
   ncclResult_t ncclTuning##Name##ModelSim(struct ncclTuningInput_t* const, \
-                                          struct ncclTuningResult_t* const tuning) { \
+                                          struct ncclTuningResult_t* const tuning, struct ncclTuningModelState*) { \
     return RecordSim(ModelKind::Name, tuning); \
   }
 
@@ -118,10 +119,12 @@ DEFINE_MODEL_FAKE(Pat)
 #undef DEFINE_MODEL_FAKE
 
 // Symk and CE have no init entry in modelMap[], only a sim.
-ncclResult_t ncclTuningSymkModelSim(struct ncclTuningInput_t* const, struct ncclTuningResult_t* const tuning) {
+ncclResult_t ncclTuningSymkModelSim(struct ncclTuningInput_t* const, struct ncclTuningResult_t* const tuning,
+                                    struct ncclTuningModelState*) {
   return RecordSim(ModelKind::Symk, tuning);
 }
-ncclResult_t ncclTuningCeModelSim(struct ncclTuningInput_t* const, struct ncclTuningResult_t* const tuning) {
+ncclResult_t ncclTuningCeModelSim(struct ncclTuningInput_t* const, struct ncclTuningResult_t* const tuning,
+                                  struct ncclTuningModelState*) {
   return RecordSim(ModelKind::Ce, tuning);
 }
 
@@ -275,6 +278,13 @@ TEST_F(CostModelMicrotest, RegistryNamesEverySymmetricKernelId) {
     int algo = -9, proto = -9, sym = -9, ce = -9;
     ASSERT_EQ(ncclSuccess, ncclTuningExpandId(id, &algo, &proto, &sym, &ce));
     const char* name = ncclAlgNameForSymk(sym);
+    if (sym == ncclSymkKernelId_AlltoAll_LL) {
+      // NCCL 2.32.6's AlltoAll_LL is a symmetric kernel for ncclAlltoAll, which has no general rows and no F_* bit
+      // in the registry, so per-call algSelection cannot name it. Still priced like every other symmetric id.
+      EXPECT_EQ(nullptr, name) << "AlltoAll_LL gained a registry row; drop this exception";
+      EXPECT_NE(nullptr, modelMap[id].model) << "tuning id " << id;
+      continue;
+    }
     ASSERT_NE(nullptr, name) << "symKernelId " << sym << " (tuning id " << id << ") has no registry row";
     EXPECT_NE(0ull, ncclAlgTagMask(name) & (1ull << id)) << name << " -> id " << id;
     // Every symmetric row is priced; modelMap has no null symk entries.
