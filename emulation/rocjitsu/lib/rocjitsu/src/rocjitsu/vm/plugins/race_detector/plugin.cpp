@@ -331,7 +331,7 @@ void RaceDetectorPlugin::onAmdgpuRegisterHazard(const amdgpu::RegisterHazardObse
   };
   std::string details;
   if (hazard.producer_instruction && hazard.consumer_instruction) {
-    // This hook precedes the consumer's before-execute notification. Copy and
+    // This hook precedes the consumer's instruction notification. Copy and
     // extend the trace only when emitting a report, not on every instruction.
     auto trace = state->trace;
     trace.push(*hazard.consumer_instruction);
@@ -722,6 +722,13 @@ void RaceDetectorPlugin::onAmdgpuBeforeExecuteInstruction(uint64_t pc, const Ins
   }
   s->lds_operand_read.reset();
   s->trace.push(instruction);
+}
+
+void RaceDetectorPlugin::onAmdgpuAsyncInstructionIssued(uint64_t pc, const Instruction &inst,
+                                                        amdgpu::Wavefront &wf) {
+  auto *s = get_state(wf);
+  assert(s && s->race_state);
+  s->trace.push(capture_instruction(pc, inst));
 }
 
 void RaceDetectorPlugin::onAmdgpuAfterExecuteInstruction(uint64_t /*pc*/, const Instruction &inst,
