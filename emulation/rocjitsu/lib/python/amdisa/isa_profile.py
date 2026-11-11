@@ -471,6 +471,11 @@ class IsaProfile(ABC):
         """L2 ADD NaN order; indexed LDS always prefers the incoming operand."""
         return False
 
+    @property
+    def atomic_minmax_snan_wins(self) -> bool:
+        """Flushed-input MIN/MAX still return a quieted SNaN, the data operand's first."""
+        return False
+
     def scalar_atomic_denorm_modes(
         self, operation: str, elem_size: int, *, ds: bool
     ) -> tuple[str, str]:
@@ -1873,6 +1878,8 @@ class CdnaProfile(_AmdgpuProfileBase):
     flat_offset_bits = 13
     flat_lds_m0_mask = 0x3FFFC
     scratch_has_vaddr_expr = 'inst_.lds != 0'
+    # Float atomic rules measured on MI300A (gfx942) and MI350X (gfx950).
+    measured_float_atomics = True
 
     @property
     def dpp_reverse_shifts_use_src1(self) -> bool:
@@ -1886,6 +1893,30 @@ class CdnaProfile(_AmdgpuProfileBase):
     def ds_compare_store_compare_first(self) -> bool:
         # CDNA1-4 / RDNA1-2 DS CMPST reverses the BUFFER operand order.
         return True
+
+    @property
+    def atomic_legacy_minmax(self) -> bool:
+        # MI300A/MI350X MIN/MAX return the MODE-flushed winner.
+        return not self.measured_float_atomics
+
+    @property
+    def atomic_minmax_snan_wins(self) -> bool:
+        return self.measured_float_atomics
+
+    @property
+    def atomic_source_nan_first(self) -> bool:
+        return self.measured_float_atomics
+
+    def scalar_atomic_denorm_modes(
+        self, operation: str, elem_size: int, *, ds: bool
+    ) -> tuple[str, str]:
+        memory_mode, lds_mode = super().scalar_atomic_denorm_modes(
+            operation, elem_size, ds=ds
+        )
+        # MI300A/MI350X L2 never flushes, contrary to the ISA's ADD_F32 table.
+        if self.measured_float_atomics and not ds:
+            memory_mode = '3'
+        return memory_mode, lds_mode
 
     @property
     def vmem_stores_complete_in_order(self) -> bool:
@@ -2097,10 +2128,12 @@ class Cdna1Profile(CdnaProfile):
     - Scratch base via SGPR pair (not HW register).
     - ENC_VOP3PX2 does not exist in CDNA1 XML.
     - The current runtime ISA trait leaves SRAM ECC disabled.
+    - Older float-atomic rules; the MI300A/MI350X captures do not cover it.
     """
 
     legacy_flat_lds = True
     scratch_has_vaddr_expr = 'inst_.saddr == 0x7F'
+    measured_float_atomics = False
 
     flat_lds_m0_mask = 0xFFFC
 
@@ -2179,10 +2212,12 @@ class Cdna2Profile(CdnaProfile):
     - GFX9-style GLC-only coherency model.
     - Scratch base via SGPR pair.
     - ENC_VOP3PX2 does not exist in CDNA2 XML.
+    - Older float-atomic rules; the MI300A/MI350X captures do not cover it.
     """
 
     legacy_flat_lds = True
     scratch_has_vaddr_expr = 'inst_.saddr == 0x7F'
+    measured_float_atomics = False
 
     flat_lds_m0_mask = 0xFFFC
 
