@@ -81,15 +81,35 @@ class TestStatic(TestCliBase):
     def test_csv_file(self):
         """`amd-smi static --csv --file` writes the same parseable table as stdout."""
         self.common.print_func_name("")
-        stdout_rows = self.run_csv("amd-smi static --csv")
+        # Settable fields (e.g. process_isolation) can change between the two runs,
+        # so only cell differences that survive one rerun fail.
+        persistent = None
         with tempfile.TemporaryDirectory() as folder:
-            path = os.path.join(folder, "static.csv")
-            cmd = f"amd-smi static --csv --file {path}"
-            self.assertEqual(self.run_ok(cmd).strip(), "", f"'{cmd}' also wrote to stdout")
-            self.assertTrue(os.path.isfile(path), f"'{cmd}' did not create {path}")
-            with open(path, encoding="utf-8") as fin:
-                file_rows = self.parse_csv(fin.read(), cmd)
-        self.assertEqual(file_rows, stdout_rows, "--file CSV differs from stdout CSV")
+            for attempt in range(2):
+                stdout_rows = self.run_csv("amd-smi static --csv")
+                path = os.path.join(folder, f"static{attempt}.csv")
+                cmd = f"amd-smi static --csv --file {path}"
+                self.assertEqual(self.run_ok(cmd).strip(), "", f"'{cmd}' also wrote to stdout")
+                self.assertTrue(os.path.isfile(path), f"'{cmd}' did not create {path}")
+                with open(path, encoding="utf-8") as fin:
+                    file_rows = self.parse_csv(fin.read(), cmd)
+                self.assertEqual(
+                    [list(row) for row in file_rows],
+                    [list(row) for row in stdout_rows],
+                    "--file CSV layout differs from stdout CSV",
+                )
+                diffs = {
+                    f"gpu {stdout_row['gpu']} {column}: file {value!r}, stdout {stdout_row[column]!r}"
+                    for file_row, stdout_row in zip(file_rows, stdout_rows)
+                    for column, value in file_row.items()
+                    if value != stdout_row[column]
+                }
+                persistent = diffs if persistent is None else persistent & diffs
+                if not persistent:
+                    break
+        self.assertFalse(
+            persistent, "--file CSV differs from stdout CSV:\n  " + "\n  ".join(sorted(persistent))
+        )
 
     def test_asic_revision_id_keys(self):
         """The revision ids must reach JSON and CSV, not only the human output."""

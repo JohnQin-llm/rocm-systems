@@ -899,15 +899,11 @@ class AMDSMILogger:
                 stored_csv_output = [self.output]
 
         if stored_csv_output:
-            csv_keys = set()
-            for output in stored_csv_output:
-                for key in output:
-                    csv_keys.add(key)
-
-            for index, output_dict in enumerate(stored_csv_output):
-                remaining_keys = csv_keys - set(output_dict.keys())
-                for key in remaining_keys:
-                    stored_csv_output[index][key] = "N/A"
+            # A dict, not a set: the fill-in order becomes the CSV column order.
+            csv_keys = dict.fromkeys(key for output in stored_csv_output for key in output)
+            for output_dict in stored_csv_output:
+                for key in csv_keys:
+                    output_dict.setdefault(key, "N/A")
 
         if self.destination == "stdout":
             if stored_csv_output:
@@ -922,15 +918,12 @@ class AMDSMILogger:
             if watching_output:
                 with self.destination.open("w", newline="", encoding="utf-8") as output_file:
                     if self.watch_output:
-                        csv_keys = set()
-                        for output in self.watch_output:
-                            for key in output:
-                                csv_keys.add(key)
-
-                        for index, output_dict in enumerate(self.watch_output):
-                            remaining_keys = csv_keys - set(output_dict.keys())
-                            for key in remaining_keys:
-                                self.watch_output[index][key] = "N/A"
+                        csv_keys = dict.fromkeys(
+                            key for output in self.watch_output for key in output
+                        )
+                        for output_dict in self.watch_output:
+                            for key in csv_keys:
+                                output_dict.setdefault(key, "N/A")
 
                         # Get the header as a list of the first element to maintain order
                         csv_header = self.watch_output[0].keys()
@@ -990,25 +983,17 @@ class AMDSMILogger:
 
         # Ensure uniform data within primary and secondary csv outputs
         if primary_csv_output:
-            primary_keys = set()
-            for output in primary_csv_output:
-                for key in output:
-                    primary_keys.add(key)
+            primary_keys = dict.fromkeys(key for output in primary_csv_output for key in output)
             # insert empty data to align with keys that may not exist
-            for index, output_dict in enumerate(primary_csv_output):
-                remaining_keys = primary_keys - set(output_dict.keys())
-                for key in remaining_keys:
-                    primary_csv_output[index][key] = "N/A"
+            for output_dict in primary_csv_output:
+                for key in primary_keys:
+                    output_dict.setdefault(key, "N/A")
         if secondary_csv_output:
-            secondary_keys = set()
-            for output in secondary_csv_output:
-                for key in output:
-                    secondary_keys.add(key)
+            secondary_keys = dict.fromkeys(key for output in secondary_csv_output for key in output)
             # insert empty data to align with keys that may not exist
-            for index, output_dict in enumerate(secondary_csv_output):
-                remaining_keys = secondary_keys - set(output_dict.keys())
-                for key in remaining_keys:
-                    secondary_csv_output[index][key] = "N/A"
+            for output_dict in secondary_csv_output:
+                for key in secondary_keys:
+                    output_dict.setdefault(key, "N/A")
 
         if self.destination == "stdout":
             if primary_csv_output:
@@ -1069,25 +1054,21 @@ class AMDSMILogger:
 
                         # Ensure uniform data within primary and secondary csv outputs
                         if primary_csv_output:
-                            primary_keys = set()
-                            for output in primary_csv_output:
-                                for key in output:
-                                    primary_keys.add(key)
+                            primary_keys = dict.fromkeys(
+                                key for output in primary_csv_output for key in output
+                            )
                             # insert empty data to align with keys that may not exist
-                            for index, output_dict in enumerate(primary_csv_output):
-                                remaining_keys = primary_keys - set(output_dict.keys())
-                                for key in remaining_keys:
-                                    primary_csv_output[index][key] = "N/A"
+                            for output_dict in primary_csv_output:
+                                for key in primary_keys:
+                                    output_dict.setdefault(key, "N/A")
                         if secondary_csv_output:
-                            secondary_keys = set()
-                            for output in secondary_csv_output:
-                                for key in output:
-                                    secondary_keys.add(key)
+                            secondary_keys = dict.fromkeys(
+                                key for output in secondary_csv_output for key in output
+                            )
                             # insert empty data to align with keys that may not exist
-                            for index, output_dict in enumerate(secondary_csv_output):
-                                remaining_keys = secondary_keys - set(output_dict.keys())
-                                for key in remaining_keys:
-                                    secondary_csv_output[index][key] = "N/A"
+                            for output_dict in secondary_csv_output:
+                                for key in secondary_keys:
+                                    output_dict.setdefault(key, "N/A")
 
                         if primary_csv_output:
                             # Get the header as a list of the first element to maintain order
