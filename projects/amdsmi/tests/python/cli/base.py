@@ -12,9 +12,12 @@ files each subclass ``TestCliBase`` and add their own test_* methods.
 """
 
 import collections
+import csv
+import io
 import json
 import math
 import os
+import re
 import stat
 import sys
 import unittest
@@ -1165,3 +1168,128 @@ class TestCliBase(unittest.TestCase):
             msg = f"\n{self.tab}".join(errors)
             self.fail(f"Fail:\n{self.tab}{msg}")
         return
+
+    def run_ok(self, cmd):
+        """stdout of *cmd*, failing the test unless it exits with PASS."""
+        (rc, std_out, std_err) = self.util.RunCmdSync(cmd)
+        self.assertEqual(rc, self.PASS, f"'{cmd}' failed with rc={rc}: {std_err}")
+        return std_out or ""
+
+    def run_json(self, cmd):
+        """Parsed JSON stdout of *cmd*; the whole of stdout must be one JSON document."""
+        std_out = self.run_ok(cmd)
+        try:
+            return json.loads(std_out)
+        except json.JSONDecodeError as e:
+            self.fail(f"'{cmd}' did not print valid JSON: {e}\n{std_out[:500]}")
+
+    def parse_csv(self, text, source):
+        """GPU rows of the CSV document *text*, as dicts keyed by column.
+
+        Every table in the document must be well formed: a header with unique
+        columns, at least one row, and every row as wide as its header. Tables
+        are separated by a blank line; exactly one must carry a ``gpu`` column.
+        """
+        self.assertTrue(text and text.strip(), f"{source}: empty CSV output")
+        gpu_rows = None
+        for block in re.split(r"\n\s*\n", text.strip()):
+            table = list(csv.reader(io.StringIO(block)))
+            header, rows = table[0], table[1:]
+            self.assertEqual(
+                len(header), len(set(header)), f"{source}: duplicate CSV columns {header}"
+            )
+            self.assertTrue(rows, f"{source}: CSV header without rows: {header}")
+            for line, row in enumerate(rows, 2):
+                self.assertEqual(
+                    len(row),
+                    len(header),
+                    f"{source}: CSV line {line} has {len(row)} fields, header has {len(header)}",
+                )
+            if "gpu" in header:
+                self.assertIsNone(gpu_rows, f"{source}: more than one CSV table has a gpu column")
+                gpu_rows = [dict(zip(header, row)) for row in rows]
+        self.assertIsNotNone(gpu_rows, f"{source}: no CSV table has a gpu column")
+        return gpu_rows
+
+    def run_csv(self, cmd):
+        return self.parse_csv(self.run_ok(cmd), cmd)
+
+    def assert_gpu_ids(self, gpu_ids, source):
+        """*gpu_ids* must name every GPU ``amd-smi list`` reports, and no other."""
+        expected = {entry["gpu"] for entry in self.list_data}
+        self.assertEqual(set(int(gpu) for gpu in gpu_ids), expected, f"{source}: GPU set")
+
+    @staticmethod
+    def _json_leaves(node, path=()):
+        """(key path, value) for every scalar in *node*; a value/unit pair is one leaf."""
+        if isinstance(node, dict):
+            if "value" in node and set(node) <= {"value", "unit"}:
+                yield path, node["value"]
+                return
+            for key, value in node.items():
+                yield from TestCliBase._json_leaves(value, path + (str(key),))
+        else:
+            yield path, node
+
+    def _csv_json_na_mismatches(self, csv_rows, json_entries, skip):
+        """Columns where CSV and JSON disagree on whether the field is N/A.
+
+        Returns:
+            tuple: (mismatch descriptions, columns compared, columns checked).
+        """
+        by_gpu = {int(entry["gpu"]): entry for entry in json_entries}
+        mismatches, compared, checked = set(), 0, 0
+        for row in csv_rows:
+            entry = by_gpu.get(int(row["gpu"]))
+            if entry is None:
+                mismatches.add(f"gpu {row['gpu']}: in CSV but not in JSON")
+                continue
+            # CSV flattens nested keys by joining the trailing part of their path,
+            # so a column maps to every leaf whose path ends in it.
+            na_states = {}
+            for path, value in self._json_leaves(entry):
+                for start in range(len(path)):
+                    na_states.setdefault("_".join(path[start:]), set()).add(value == "N/A")
+            for column, value in row.items():
+                if column == "gpu" or column in skip:
+                    continue
+                checked += 1
+                states = na_states.get(column)
+                if not states or len(states) != 1:
+                    continue
+                compared += 1
+                json_na = next(iter(states))
+                if (value == "N/A") != json_na:
+                    json_text = "N/A" if json_na else "a value"
+                    mismatches.add(f"gpu {row['gpu']} {column}: CSV {value!r}, JSON {json_text}")
+        return mismatches, compared, checked
+
+    def assert_json_csv_consistent(self, cmd, skip=()):
+        """Run *cmd* as JSON and CSV and require both to report the same N/A fields.
+
+        A field reported in one format but N/A in the other is a formatting bug,
+        not an unsupported feature. One rerun absorbs a live reading that
+        changed between the two invocations; only persistent mismatches fail.
+
+        Returns:
+            tuple: (JSON GPU entries, CSV GPU rows) from the last run.
+        """
+        persistent = None
+        for _ in range(2):
+            data = self.run_json(f"{cmd} --json")
+            json_entries = data["gpu_data"] if isinstance(data, dict) else data
+            csv_rows = self.run_csv(f"{cmd} --csv")
+            mismatches, compared, checked = self._csv_json_na_mismatches(
+                csv_rows, json_entries, skip
+            )
+            persistent = mismatches if persistent is None else persistent & mismatches
+            if not persistent:
+                break
+        self.assertFalse(
+            persistent, f"'{cmd}': CSV and JSON disagree:\n  " + "\n  ".join(sorted(persistent))
+        )
+        # Guard against a vacuous pass when columns stop mapping onto JSON keys.
+        self.assertGreaterEqual(
+            compared * 2, checked, f"'{cmd}': only {compared}/{checked} CSV columns map to JSON"
+        )
+        return json_entries, csv_rows
