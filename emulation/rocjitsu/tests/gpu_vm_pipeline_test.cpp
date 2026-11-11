@@ -45,6 +45,11 @@ public:
 
 class MemoryLifecyclePlugin final : public ExecutionPlugin {
 public:
+  bool observes_before_execute_instruction() const override { return true; }
+  bool observes_after_execute_instruction() const override { return true; }
+  bool observes_memory_instruction_routing() const override { return true; }
+  bool supports_async_instructions() const override { return false; }
+
   MemoryLifecyclePlugin() : ExecutionPlugin("vm-memory-lifecycle") {}
 
   void onAmdgpuBeforeExecuteInstruction(uint64_t, const Instruction &inst,
@@ -72,6 +77,10 @@ public:
 
 class InvalidAtomicOperationPlugin final : public ExecutionPlugin {
 public:
+  bool observes_before_execute_instruction() const override { return true; }
+  bool observes_memory_instruction_routing() const override { return true; }
+  bool supports_async_instructions() const override { return false; }
+
   InvalidAtomicOperationPlugin() : ExecutionPlugin("invalid-atomic-operation") {}
 
   void onAmdgpuBeforeExecuteInstruction(uint64_t pc, const Instruction &,
@@ -319,6 +328,10 @@ public:
 
 class InstructionVmPlugin final : public ExecutionPlugin {
 public:
+  bool observes_before_execute_instruction() const override { return true; }
+  bool observes_after_execute_instruction() const override { return true; }
+  bool supports_async_instructions() const override { return false; }
+
   InstructionVmPlugin() : ExecutionPlugin("instruction-vm") {}
   void onAmdgpuBeforeExecuteInstruction(uint64_t, const Instruction &,
                                         amdgpu::Wavefront &wf) override {
@@ -2819,6 +2832,8 @@ TEST(GpuVmPipeline, TranslatedTensorLoadRetriesBeforeCommittingLdsOrBarrier) {
 TEST(GpuVmPipeline, DeferredTensorLoadReportsInstructionPcAtCompletion) {
   class TensorDmaPcObserver final : public ExecutionPlugin {
   public:
+    bool supports_async_instructions() const override { return false; }
+
     TensorDmaPcObserver() : ExecutionPlugin("tensor-dma-pc") {}
     bool observes_tensor_dma_memory_access() const override { return true; }
     void
@@ -2879,6 +2894,8 @@ TEST(GpuVmPipeline, DeferredTensorLoadReportsInstructionPcAtCompletion) {
 TEST(GpuVmPipeline, DeferredTensorLoadIssuesOnceAndCompletesAtItsInstructionPc) {
   class TensorDmaStepObserver final : public ExecutionPlugin {
   public:
+    bool supports_async_instructions() const override { return false; }
+
     TensorDmaStepObserver() : ExecutionPlugin("tensor-dma-step") {}
     bool observes_tensor_dma_issue() const override { return true; }
     bool observes_tensor_dma_memory_access() const override { return true; }
