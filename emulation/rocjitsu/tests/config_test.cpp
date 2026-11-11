@@ -5697,7 +5697,8 @@ TEST(CheckpointTest, RoundTripsWaitCheckingModes) {
     }
     auto *restored_cu = restored.soc()->xcd(0)->shader_engine(0)->compute_unit(0);
     ASSERT_NE(restored_cu->wf(0), nullptr);
-    EXPECT_EQ(restored_cu->wf(0)->memory_wait_checks_enabled(), mode != config::WaitChecking::Off);
+    EXPECT_EQ(restored_cu->config().memory_wait_checks_enabled(),
+              mode != config::WaitChecking::Off);
   }
 }
 

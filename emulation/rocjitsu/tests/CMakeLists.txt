@@ -687,6 +687,7 @@ add_executable(
     execution_plugin_register_test.cpp
     execution_plugin_memory_test.cpp
     execution_plugin_race_test.cpp
+    execution_plugin_register_hazard_test.cpp
     plugin_config_resolver_test.cpp
     plugin_loader_test.cpp
     race-detector/race_detector_counter_capacity_tests.cpp
@@ -2214,6 +2215,12 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         COMMAND
             standalone_plugin_abi_test $<TARGET_FILE:rocjitsu_plugin_race_so>
             race
+    )
+    add_test(
+        NAME ExecutionPluginAbi.StandaloneRaceCoreRegisterModeLoads
+        COMMAND
+            standalone_plugin_abi_test $<TARGET_FILE:rocjitsu_plugin_race_so>
+            race [=[{"register_checker":"core"}]=]
     )
 
     # Keep inline register accessors in a separate DSO without linking core

@@ -10,7 +10,7 @@
 #include <span>
 #include <stdexcept>
 
-namespace rocjitsu::plugins::race_detector {
+namespace rocjitsu {
 
 /// @brief A copy of one executed instruction's PC and encoding.
 ///
@@ -29,7 +29,7 @@ public:
   constexpr InstructionSnapshot(uint64_t pc, std::span<const uint32_t> encoding)
       : pc_(pc), word_count_(static_cast<uint32_t>(encoding.size())) {
     if (encoding.empty() || encoding.size() > kMaxWords)
-      throw std::logic_error("race detector instruction snapshot has an invalid word count");
+      throw std::logic_error("instruction snapshot has an invalid word count");
     std::ranges::copy(encoding, words_.begin());
   }
 
@@ -48,4 +48,4 @@ private:
   uint32_t word_count_;
 };
 
-} // namespace rocjitsu::plugins::race_detector
+} // namespace rocjitsu
