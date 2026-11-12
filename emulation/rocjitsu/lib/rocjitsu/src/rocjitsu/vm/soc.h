@@ -40,6 +40,10 @@ namespace test {
 class SoCTestAccess;
 }
 
+namespace timing {
+class TimingCollector;
+}
+
 /// @brief System-on-Chip container with XCDs, I/O Dies, and shared GPU memory.
 ///
 /// Constructs the full GPU hierarchy (memory + IODs + XCDs + shader engines + CUs)
@@ -282,6 +286,13 @@ public:
   /// @returns The effective functional dispatch width after mode and CU-capacity clamps.
   uint32_t dispatch_threads() const { return dispatch_threads_; }
 
+  /// @brief Install the layer that turns execution into modelled time.
+  ///
+  /// @details Fanned out to every die the same way the plugin group is. Null
+  /// means no timing plane, which is the default and costs each compute unit a
+  /// single not-taken branch on its issue path.
+  void set_timing_collector(timing::TimingCollector *collector);
+
   const std::vector<amdgpu::ComputeUnitCore *> &all_cus();
 
   ExecutionPluginGroup &plugin_group() { return *plugin_group_; }
@@ -321,6 +332,7 @@ private:
   uint32_t requested_dispatch_threads_ = 1;
   uint32_t dispatch_threads_ = 1;
   std::shared_ptr<ExecutionPluginGroup> plugin_group_;
+  timing::TimingCollector *timing_collector_ = nullptr;
   std::vector<amdgpu::ComputeUnitCore *> all_cus_cache_;
   bool vm_resources_released_ = false;
 };

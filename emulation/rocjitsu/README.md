@@ -174,6 +174,7 @@ workers. Scripts, tests, interactive shells, and notebooks use the same library.
 | [Plugins](docs/plugins.md) | Execution plugin system and sink API |
 | [VM Design](docs/vm-design.md) | GPU hardware model (CP, CU, caches, KMD) |
 | [Simdojo Engine](docs/simdojo.md) | PDES simulation framework |
+| [Timing Model](docs/timing.md) | Clocked components, guest clock interception, calibration |
 | [DBT Design](docs/dbt-design.md) | Binary translator architecture |
 | [DBI Design](docs/dbi-design.md) | Binary instrumentation (in progress) |
 | [Codegen](docs/codegen.md) | ISA codegen pipeline and regen commands |

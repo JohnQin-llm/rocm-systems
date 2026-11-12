@@ -10,6 +10,7 @@
 #include "rocjitsu/vm/amdgpu/hsa_clock.h"
 #include "rocjitsu/vm/amdgpu/mem_state.h"
 #include "rocjitsu/vm/amdgpu/pm4/pm4_packet_processor.h"
+#include "rocjitsu/vm/timing/collector.h"
 
 #include "rocjitsu/base/rj_compiler.h"
 RJ_DIAGNOSTIC_PUSH
@@ -894,6 +895,10 @@ void CommandProcessor::startup() {
   completion_->set_dispatch_retired_callback([this](const DispatchEntry &entry) {
     erase_cluster_workgroups(entry.dispatch_id);
     dispatch_launch_metadata_.erase(entry.dispatch_id);
+    // Alongside the completion tracker's own execution-end hook. Driven from
+    // here because the tracker takes a plugin group and the plane is not one.
+    if (timing_ != nullptr)
+      timing_->dispatch_execution_end(entry.dispatch_id);
     // Resume fetch after the blocking packet's completion is durable.
     if (entry.blocks_following && engine()) {
       stall_recheck_backoff_ = 1;
@@ -2125,8 +2130,11 @@ void CommandProcessor::drain_pending_cluster_barrier_completions() {
           cu->complete_barrier(completion.dispatch_id, peer_wg_id, completion.completion_bit);
       members.insert(members.end(), peer_members.begin(), peer_members.end());
     }
-    if (!members.empty())
+    if (!members.empty()) {
       plugin_group_->onAmdgpuBarrierResolved(std::span<Wavefront *>(members), BarrierKind::Cluster);
+      if (timing_ != nullptr)
+        timing_->barrier_resolved(std::span<Wavefront *>(members));
+    }
   }
 }
 
@@ -2307,8 +2315,11 @@ void CommandProcessor::mark_cluster_workgroup_complete(uint32_t dispatch_id, uin
       auto peer_members = cu->complete_barrier(dispatch_id, peer_wg_id, completion_bit);
       members.insert(members.end(), peer_members.begin(), peer_members.end());
     }
-    if (!members.empty())
+    if (!members.empty()) {
       plugin_group_->onAmdgpuBarrierResolved(std::span<Wavefront *>(members), BarrierKind::Cluster);
+      if (timing_ != nullptr)
+        timing_->barrier_resolved(std::span<Wavefront *>(members));
+    }
   }
 
   release_cluster_lds_pins(unpin);
@@ -2548,6 +2559,13 @@ CommandProcessor::dispatch_workgroups(DispatchEntry &entry) {
                                                cu->sgpr_allocation_block_size(), wg_wavefronts);
     for (auto *wf : wg_wavefronts)
       plugin_group_->onAmdgpuWavefrontDispatched(*wf);
+    // Not from ComputeUnitCore::dispatch_wf_at, which is where the wave's slot
+    // is claimed: the dispatch and queue ids are written above, after that
+    // returns, and a wavefront announced without them would be attributed to
+    // dispatch zero on every queue.
+    if (timing_ != nullptr)
+      for (auto *wf : wg_wavefronts)
+        timing_->wave_dispatched(*wf);
 
     ++entry.dispatched_wgs;
     ++dispatched;
@@ -4331,6 +4349,7 @@ AqlAdmissionResult CommandProcessor::admit_kernel_dispatch(
 
   KernelDispatchInfo dispatch_info{};
   dispatch_info.dispatch_id = dp.dispatch_id;
+  dispatch_info.queue_id = dp.queue_id;
   dispatch_info.kernel_object = pkt.kernel_object;
   dispatch_info.entry_pc = entry_pc;
   dispatch_info.kernel_symbol = kernel_symbol;
@@ -4352,7 +4371,13 @@ AqlAdmissionResult CommandProcessor::admit_kernel_dispatch(
   dispatch_info.wfs_per_workgroup = wfs_per_wg;
   dispatch_info.sgprs_per_wf = dp.sgprs_per_wf;
   dispatch_info.vgprs_per_wf = dp.vgprs_per_wf;
+  // The granule-aligned size, which is what the compute unit actually reserves
+  // and therefore what bounds how many workgroups fit on it.
+  dispatch_info.lds_bytes_per_workgroup =
+      static_cast<uint32_t>(lds_allocation_bytes(arch, dp.group_segment_fixed_size));
   plugin_group_->onAmdgpuDispatchPacketProcessed(dispatch_info);
+  if (timing_ != nullptr)
+    timing_->dispatch_packet(dispatch_info);
 
   util::Logger::vm([&](auto &os) {
     os << std::format("dispatch #{} d={} \"{}\" symbol=\"{}\" grid=[{},{},{}] wg=[{},{},{}] wgs={} "

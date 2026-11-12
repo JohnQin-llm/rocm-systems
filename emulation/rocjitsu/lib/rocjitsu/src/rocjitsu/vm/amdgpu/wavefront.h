@@ -358,6 +358,9 @@ public:
   /// @brief Read nanoseconds from the selected realtime clock.
   uint64_t realtime_timestamp() const;
   uint64_t shader_cycles() const;
+  /// @brief The CU's functional step counter, for scheduling only; never
+  ///        guest-visible (shader_cycles() is the guest's clock).
+  uint64_t functional_cycles() const;
   /// Read the fixed-frequency SMEM clock in units of 1 / frequency_mhz microseconds.
   uint64_t realtime_clock() const;
   /// @brief Bind wave errors to the PM4 submission that launched this wave.
@@ -955,7 +958,7 @@ public:
   }
 
   void delay_nop_issue(uint32_t extra_cycles) {
-    nop_ready_cycle_ = shader_cycles() + extra_cycles + 1;
+    nop_ready_cycle_ = functional_cycles() + extra_cycles + 1;
   }
 
   /// @brief Cycles this wave still owes an in-flight s_sleep.

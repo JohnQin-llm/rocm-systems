@@ -10,6 +10,7 @@
 #include "rocjitsu/vm/amdgpu/gpu_vm.h"
 #include "rocjitsu/vm/amdgpu/hsa_clock.h"
 #include "rocjitsu/vm/amdgpu/pm4/pm4.h"
+#include "rocjitsu/vm/timing/collector.h"
 
 #include <algorithm>
 
@@ -138,13 +139,22 @@ void Wavefront::observe_lds_direct_read(uint32_t address, uint32_t bytes, uint32
 
 bool Wavefront::has_gpu_memory() const { return cu_.memory() != nullptr; }
 
-uint64_t Wavefront::shader_cycles() const { return cu_.cycle_count(); }
+uint64_t Wavefront::functional_cycles() const { return cu_.cycle_count(); }
+
+uint64_t Wavefront::shader_cycles() const {
+  // With a timing model installed the guest reads modelled cycles, the same
+  // clock behind its HIP event timestamps.
+  const auto &clock = SimulatedClock::instance();
+  return clock.is_simulated() ? clock.shader_cycles() : cu_.cycle_count();
+}
 
 uint64_t Wavefront::realtime_clock() const {
   return gpu_clock_from_ns(realtime_timestamp(), gpu_clock_mhz(cu_.arch()));
 }
 
 uint64_t Wavefront::realtime_timestamp() const {
+  if (SimulatedClock::instance().is_simulated())
+    return SimulatedClock::instance().nanoseconds();
   if (use_system_clock_)
     return hsa_system_timestamp();
   return cu_.model_realtime_timestamp() / (simdojo::TICKS_PER_SECOND / 1'000'000'000);
@@ -278,6 +288,11 @@ void Wavefront::halt(CpCompletionNotice notice) {
   //       has_active_wfs() accurate so the last wave triggers LDS reclaim.
   // The halt hook also completes race events before release_wf can resolve a barrier.
   cu_.plugin_group().onAmdgpuWavefrontHalted(*this);
+  // Same moment, and for the same reason: the timing collector reports the
+  // terminator from here, because an s_endpgm with no outstanding waits halts
+  // inside execute_instruction and never reaches the after-execute hook.
+  if (timing::TimingCollector *timing = cu_.timing_collector(); timing != nullptr)
+    timing->wave_halted(*this);
   const uint32_t dispatch_id = dispatch_id_;
   const uint32_t wg_id = wg_id_;
   cu_.free_wavefront_resources(*this);

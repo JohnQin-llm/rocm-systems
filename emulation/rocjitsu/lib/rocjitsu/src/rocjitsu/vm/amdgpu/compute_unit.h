@@ -32,6 +32,7 @@
 #include "rocjitsu/vm/plugins/execution_plugin_group.h"
 #include "simdojo/components/register_file.h"
 #include "simdojo/components/vector_reg.h"
+#include "rocjitsu/vm/timing/simulated_clock.h"
 #include "util/bit.h"
 #include "util/diagnostic.h"
 #include "util/except.h"
@@ -66,6 +67,10 @@ namespace rocjitsu {
 namespace test {
 class ComputeUnitTestAccess;
 }
+
+namespace timing {
+class TimingCollector;
+} // namespace timing
 namespace amdgpu {
 
 /// @brief Reporting policy for pending memory-result register accesses.
@@ -737,6 +742,21 @@ public:
   /// @brief Return the execution plugin group.
   ExecutionPluginGroup &plugin_group() { return *plugin_group_; }
   const ExecutionPluginGroup &plugin_group() const { return *plugin_group_; }
+
+  /// @brief Install the layer that turns execution into modelled time.
+  ///
+  /// @details Borrowed, and null means no timing plane, which is the default.
+  /// Every call site on the issue path is guarded on this pointer, so a run
+  /// with no plane pays a single predictable not-taken branch there, which is
+  /// what the execution plugin group already costs in the same place.
+  ///
+  /// Installing also gives every wavefront slot its collector state, because
+  /// the collector reads that slot without bounds checking and growing the
+  /// storage behind it lazily would put an allocation on the issue path.
+  void set_timing_collector(timing::TimingCollector *collector);
+
+  /// @brief Return the timing collector, or null when no plane is installed.
+  timing::TimingCollector *timing_collector() const { return timing_; }
 
   /// @brief Return the number of resident (not-yet-halted) wavefront slots.
   /// @details A wave frees its resources and its slot at s_endpgm, so halted
@@ -1931,6 +1951,7 @@ protected:
   uint64_t xcnt_diagnostic_count_ = 0;
   // Reports come only from the CU issuing thread; helpers must not report.
   std::atomic<uint64_t> isa_diagnostic_count_{0};
+  timing::TimingCollector *timing_ = nullptr;
 
   /// @brief Resolve the owner of a physical SGPR from its allocation block.
   /// @details Power-of-two block sizes use a shift on the instruction read path;
@@ -2067,7 +2088,8 @@ inline void InstructionComputeUnitView::request_functional_yield() {
   raw_cu().request_functional_yield();
 }
 inline uint64_t InstructionComputeUnitView::shader_cycles() const {
-  return raw_cu().cycle_counter_;
+  const auto &clock = SimulatedClock::instance();
+  return clock.is_simulated() ? clock.shader_cycles() : raw_cu().cycle_counter_;
 }
 
 inline void InstructionComputeUnitView::notify_trap_complete(Wavefront &wf) {

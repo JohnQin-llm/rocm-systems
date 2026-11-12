@@ -46,3 +46,5 @@ __pycache__
 # Local website settings
 /website/**/*.local
 /website/**/.DS_Store
+
+/build-*/
