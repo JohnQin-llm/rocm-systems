@@ -306,9 +306,20 @@ GpuAgent::GpuAgent(HSAuint32 node, const HsaNodeProperties& node_props, bool xna
     }
   }
 
+  // The host attaches over the GPU's direct link to its nearest CPU node, so read that link from
+  // the GPU side. With several CPU nodes the first need not be the one this GPU attaches to, and
+  // the thunk keeps at most one link per remote node, so a CPU node reporting both a fabric link
+  // and an xGMI link to the same GPU can surface only the former.
+  uint32_t host_link_distance = UINT32_MAX;
+  for (const core::Agent* cpu : core::Runtime::runtime_singleton_->cpu_agents()) {
+    const auto cpu_link = core::Runtime::runtime_singleton_->GetLinkInfo(node_id(), cpu->node_id());
+    if (cpu_link.num_hop == 0 || cpu_link.info.numa_distance >= host_link_distance) continue;
+    host_link_distance = cpu_link.info.numa_distance;
+    xgmi_cpu_gpu_ = (cpu_link.info.link_type == HSA_AMD_LINK_INFO_TYPE_XGMI);
+  }
+
   auto& first_cpu = core::Runtime::runtime_singleton_->cpu_agents()[0];
   auto link_info = core::Runtime::runtime_singleton_->GetLinkInfo(first_cpu->node_id(), node_id());
-  xgmi_cpu_gpu_ = (link_info.info.link_type == HSA_AMD_LINK_INFO_TYPE_XGMI);
 
   if (link_info.num_hop >= 1 && !properties_.Integrated) {
     large_bar_enabled_ = true;
