@@ -657,7 +657,8 @@ void RaceDetectorPlugin::onAmdgpuTensorDmaIssued(const amdgpu::TensorDmaIssueObs
 }
 
 void RaceDetectorPlugin::onAmdgpuBeforeExecuteInstruction(uint64_t pc, const Instruction &inst,
-                                                          amdgpu::Wavefront &wf) {
+                                                          amdgpu::Wavefront &wf,
+                                                          std::span<const uint32_t>) {
   const InstructionSnapshot instruction = capture_instruction(pc, inst);
   auto *s = get_state(wf);
   assert(s && s->race_state);
