@@ -209,7 +209,8 @@ def add_general_group(
     general_group.add_argument(
         "--experimental",
         action="store_true",
-        default=False,
+        # A mode's parser leaves a --experimental given before the mode in place
+        default=argparse.SUPPRESS,
         help=(
             "Enable experimental feature(s):\n"
             "   ML API trace (--trace-ml-api, --list-operators, --operator)\n"
@@ -239,6 +240,7 @@ def omniarg_parser(
         supported_archs,
         rocprof_compute_version,
     )
+    parser.set_defaults(experimental=False)
     parser._positionals.title = "Modes"
     parser._optionals.title = "Help"
     skills_note = _skills_note(rocprof_compute_home)
