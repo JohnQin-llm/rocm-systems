@@ -276,7 +276,8 @@ add_test(
 add_test(
     NAME RocjitsuOptionThreadFields
     COMMAND
-        $<TARGET_FILE:rocjitsu_bin> --profile mi350x --option num_threads=2
+        $<TARGET_FILE:rocjitsu_bin> --profile mi350x --option
+        cpu_thread_budget=64 --option num_threads=2
         --option=cpu_dispatch_threads=3 -oasync_helper_threads=0
         --thread-budget-table
 )
