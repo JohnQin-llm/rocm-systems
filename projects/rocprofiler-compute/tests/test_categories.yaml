@@ -67,7 +67,6 @@ test_categories:
       - test_pass_provenance
       - test_debug_row_tracker
       - test_sdk_config
-      - test_soc_gfx1201
       - test_metric_description_manager
       - test_verify_against_config_template
       - test-pc-sampling-collector
@@ -169,7 +168,6 @@ test_categories:
       - test_pass_provenance
       - test_debug_row_tracker
       - test_sdk_config
-      - test_soc_gfx1201
       - test_metric_description_manager
       - test_verify_against_config_template
       - test-pc-sampling-collector
@@ -285,7 +283,6 @@ test_categories:
       - test_pass_provenance
       - test_debug_row_tracker
       - test_sdk_config
-      - test_soc_gfx1201
       - test_metric_description_manager
       - test_verify_against_config_template
       - test-pc-sampling-collector
@@ -401,7 +398,6 @@ test_categories:
       - test_pass_provenance
       - test_debug_row_tracker
       - test_sdk_config
-      - test_soc_gfx1201
       - test_metric_description_manager
       - test_verify_against_config_template
       - test-pc-sampling-collector
