@@ -52,16 +52,19 @@ public:
   ///
   /// Fetches from K$ on hit, or fills from L2 on miss. Handles requests
   /// that span multiple cache lines.
-  void load(uint64_t addr, uint32_t num_dwords, uint32_t *dst, uint32_t vmid = 0);
+  void load(uint64_t addr, uint32_t num_dwords, uint32_t *dst, uint32_t vmid = 0,
+            Mtype instruction_mtype = Mtype::RW);
 
   /// @brief Scalar load: read num_bytes contiguous bytes from addr.
-  void load_bytes(uint64_t addr, uint32_t num_bytes, uint8_t *dst, uint32_t vmid = 0);
+  void load_bytes(uint64_t addr, uint32_t num_bytes, uint8_t *dst, uint32_t vmid = 0,
+                  Mtype instruction_mtype = Mtype::RW);
 
   /// @brief Scalar store: write num_dwords contiguous dwords to addr.
   ///
   /// Cacheable stores read-allocate and write through each modified byte range
   /// to L2. UC and CC stores bypass K$.
-  void store(uint64_t addr, uint32_t num_dwords, const uint32_t *src, uint32_t vmid = 0);
+  void store(uint64_t addr, uint32_t num_dwords, const uint32_t *src, uint32_t vmid = 0,
+             Mtype instruction_mtype = Mtype::RW);
 
   /// @brief Handle s_dcache_wb; a no-op because K$ is write-through.
   /// @param vmid Ignored. Retained only for call-site signature symmetry.

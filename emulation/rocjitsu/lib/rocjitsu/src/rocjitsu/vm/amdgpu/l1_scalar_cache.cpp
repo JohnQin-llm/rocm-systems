@@ -44,7 +44,8 @@ void L1ScalarCache::ensure_line(uint64_t addr, uint32_t vmid) {
   cache_.fill_line(addr, line_buf, vmid);
 }
 
-void L1ScalarCache::store(uint64_t addr, uint32_t num_dwords, const uint32_t *src, uint32_t vmid) {
+void L1ScalarCache::store(uint64_t addr, uint32_t num_dwords, const uint32_t *src, uint32_t vmid,
+                          Mtype instruction_mtype) {
   synchronize_epoch();
   for (uint32_t i = 0; i < num_dwords; ++i) {
     uint64_t ea = addr + i * 4;
@@ -60,6 +61,8 @@ void L1ScalarCache::store(uint64_t addr, uint32_t num_dwords, const uint32_t *sr
       Mtype mtype = Mtype::RW;
       if (memory_)
         mtype = memory_->pte_mtype(chunk_addr, vmid);
+      // GLC on SMEM must miss K$ even when the page itself is cacheable.
+      mtype = effective_mtype(instruction_mtype, mtype);
 
       if (mtype == Mtype::UC) {
         flush_line(chunk_addr, vmid);
@@ -118,7 +121,8 @@ void L1ScalarCache::flush_line(uint64_t addr, uint32_t vmid) {
   cache_.invalidate(addr, vmid);
 }
 
-void L1ScalarCache::load(uint64_t addr, uint32_t num_dwords, uint32_t *dst, uint32_t vmid) {
+void L1ScalarCache::load(uint64_t addr, uint32_t num_dwords, uint32_t *dst, uint32_t vmid,
+                         Mtype instruction_mtype) {
   synchronize_epoch();
   for (uint32_t i = 0; i < num_dwords; ++i) {
     uint64_t ea = addr + i * 4;
@@ -133,6 +137,8 @@ void L1ScalarCache::load(uint64_t addr, uint32_t num_dwords, uint32_t *dst, uint
       Mtype mtype = Mtype::RW;
       if (memory_)
         mtype = memory_->pte_mtype(chunk_addr, vmid);
+      // GLC on SMEM must miss K$ even when the page itself is cacheable.
+      mtype = effective_mtype(instruction_mtype, mtype);
 
       if (mtype == Mtype::UC) {
         flush_line(chunk_addr, vmid);
@@ -150,7 +156,8 @@ void L1ScalarCache::load(uint64_t addr, uint32_t num_dwords, uint32_t *dst, uint
   }
 }
 
-void L1ScalarCache::load_bytes(uint64_t addr, uint32_t num_bytes, uint8_t *dst, uint32_t vmid) {
+void L1ScalarCache::load_bytes(uint64_t addr, uint32_t num_bytes, uint8_t *dst, uint32_t vmid,
+                               Mtype instruction_mtype) {
   synchronize_epoch();
   uint32_t copied = 0;
   while (copied < num_bytes) {
@@ -161,6 +168,8 @@ void L1ScalarCache::load_bytes(uint64_t addr, uint32_t num_bytes, uint8_t *dst, 
     Mtype mtype = Mtype::RW;
     if (memory_)
       mtype = memory_->pte_mtype(ea, vmid);
+    // GLC on SMEM must miss K$ even when the page itself is cacheable.
+    mtype = effective_mtype(instruction_mtype, mtype);
 
     if (mtype == Mtype::UC) {
       flush_line(ea, vmid);
