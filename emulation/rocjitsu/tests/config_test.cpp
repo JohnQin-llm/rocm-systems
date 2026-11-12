@@ -3221,14 +3221,19 @@ TEST(EffectiveConfigTest, CombinesWaitCheckingAndBudgetWithoutChangingOtherField
           .failed());
 }
 
-TEST(EffectiveConfigTest, AddsLaunchPluginsAndRequiresThem) {
-  const std::string json = R"({"max_ticks":1})";
+TEST(EffectiveConfigTest, AddsLaunchPluginsAndRequiresOnlyThem) {
+  const std::string json =
+      R"({"require_all_plugins": false, "plugins": {"site-tracer": {"mode": "best_effort"}}})";
   auto rewritten =
       config::json_with_launch_overrides(json, {.plugins = {"race", "instruction-mix"}});
   ASSERT_TRUE(rewritten.succeeded());
-  EXPECT_NE(rewritten.value().find(R"("plugins": {"instruction-mix": {},"race": {}})"),
+  EXPECT_NE(rewritten.value().find(R"("site-tracer": {"mode": "best_effort"})"), std::string::npos);
+  EXPECT_NE(rewritten.value().find(R"("race": {})"), std::string::npos);
+  EXPECT_NE(rewritten.value().find(R"("instruction-mix": {})"), std::string::npos);
+  EXPECT_NE(rewritten.value().find(R"("required_plugins": ["race", "instruction-mix"])"),
             std::string::npos);
-  EXPECT_NE(rewritten.value().find(R"("require_all_plugins": true)"), std::string::npos);
+  EXPECT_NE(rewritten.value().find(R"("require_all_plugins": false)"), std::string::npos);
+  EXPECT_EQ(rewritten.value().find(R"("require_all_plugins": true)"), std::string::npos);
 }
 
 TEST(EffectiveConfigTest, KeepsExistingPluginConfigWhenLaunchPluginRepeatsIt) {
@@ -3238,7 +3243,8 @@ TEST(EffectiveConfigTest, KeepsExistingPluginConfigWhenLaunchPluginRepeatsIt) {
   EXPECT_NE(rewritten.value().find(R"("race": {})"), std::string::npos);
   EXPECT_NE(rewritten.value().find(R"("logging":{"interval":7})"), std::string::npos);
   EXPECT_EQ(rewritten.value().find(R"("logging": {})"), std::string::npos);
-  EXPECT_NE(rewritten.value().find(R"("require_all_plugins": true)"), std::string::npos);
+  EXPECT_NE(rewritten.value().find(R"("required_plugins": ["race", "logging"])"),
+            std::string::npos);
 }
 
 TEST(EffectiveConfigTest, RejectsInvalidLaunchPluginName) {
@@ -3743,6 +3749,7 @@ TEST(ConfigLoaderTest, AllowsPluginFieldsDuringStrictDbtValidation) {
   ASSERT_TRUE(write_temp_config(file, R"({
         "plugins": {"race": {}},
         "require_all_plugins": true,
+        "required_plugins": ["race"],
         "dbt_guest": {
           "enabled": false,
           "execution_backend": "hardware"
@@ -3759,6 +3766,7 @@ TEST(ConfigLoaderTest, AllowsEscapedPluginFieldsDuringStrictDbtValidation) {
   ASSERT_TRUE(write_temp_config(file, R"({
         "plugin\u0073": {"race": {}},
         "require_all_plugin\u0073": true,
+        "required_plugin\u0073": ["race"],
         "dbt_guest": {
           "enabled": false,
           "execution_backend": "hardware"
@@ -3775,6 +3783,7 @@ TEST(ConfigLoaderTest, StillRejectsMisspelledDbtFieldsWithPluginFieldsPresent) {
   ASSERT_TRUE(write_temp_config(file, R"({
         "plugins": {"race": {}},
         "require_all_plugins": true,
+        "required_plugins": ["race"],
         "dbt_guest": {
           "enabled": false,
           "execution_backed": "hardware"

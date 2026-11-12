@@ -245,7 +245,13 @@ add_test(
 )
 set_tests_properties(
     RocjitsuExecModeOverrideThreadBudget
+    PROPERTIES PASS_REGULAR_EXPRESSION "Configured \\| 8 \\| 1 \\| 0 \\| 8"
+)
+set_tests_properties(
     RocjitsuGpusPerNodeOverrideThreadBudget
+    PROPERTIES PASS_REGULAR_EXPRESSION "Configured \\| 8 \\| 17,17 \\| 8 \\| 48"
+)
+set_tests_properties(
     RocjitsuPluginOverrideThreadBudget
     PROPERTIES PASS_REGULAR_EXPRESSION "Configured"
 )

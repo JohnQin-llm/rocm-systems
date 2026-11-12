@@ -20,6 +20,7 @@
 #include <string>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 namespace rocjitsu {
 namespace config {
@@ -44,6 +45,19 @@ std::string json_string(std::string_view value) {
     }
   }
   result += '"';
+  return result;
+}
+
+std::string json_string_array(const std::vector<std::string> &values) {
+  std::string result = "[";
+  bool first = true;
+  for (const std::string &value : values) {
+    if (!first)
+      result += ", ";
+    result += json_string(value);
+    first = false;
+  }
+  result += "]";
   return result;
 }
 
@@ -191,7 +205,8 @@ FailureOr<std::string> json_with_launch_overrides(std::string_view json,
         return Result::failure();
       rewritten = std::move(result.value());
     }
-    auto result = set_top_level_field(rewritten, "require_all_plugins", "true", emit_error);
+    auto result = set_top_level_field(rewritten, "required_plugins",
+                                      json_string_array(overrides.plugins), emit_error);
     if (result.failed())
       return Result::failure();
     rewritten = std::move(result.value());

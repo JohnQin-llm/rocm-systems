@@ -735,7 +735,8 @@ void print_usage() {
          "  rocjitsu --profile "
       << kDefaultProfile
       << " -- ./app          Run with a bundled profile config\n"
-         "  rocjitsu --exec-mode clocked -- ./app        Override the config execution mode\n"
+         "  rocjitsu --exec-mode clocked --thread-budget-table\n"
+         "                                               Inspect clocked launch planning\n"
          "  rocjitsu --gpus-per-node 2 -- ./app         Override the emulated GPU count\n"
          "  rocjitsu --daemon --config foo.json -- ./app Daemon mode (fork daemon + launch app)\n"
          "  rocjitsu --daemon --config foo.json          Daemon-only (run server)\n"
