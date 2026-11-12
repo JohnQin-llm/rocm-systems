@@ -43,10 +43,11 @@ printf "%s\n" "$MASTER_PORT" > "$RJ_GRID_OUT/port-$RANK"
 
 execute_process(
     COMMAND
-        "${CMAKE_COMMAND}" -E env "ROCJITSU_RUNTIME_DIR=${TEST_RUNTIME_DIR}"
-        "${TEST_EXECUTABLE}" --profile mi350x --num-nodes 2 "${TEST_NPROC_FLAG}"
-        2 --env "RJ_GRID_OUT=${TEST_OUTPUT_DIR}" -- /bin/sh -c
-        "${_child_script}"
+        "${CMAKE_COMMAND}" -E env --unset=NCCL_P2P_DISABLE
+        --unset=NCCL_SHM_DISABLE --unset=NCCL_SOCKET_IFNAME
+        "ROCJITSU_RUNTIME_DIR=${TEST_RUNTIME_DIR}" "${TEST_EXECUTABLE}"
+        --profile mi350x --num-nodes 2 "${TEST_NPROC_FLAG}" 2 --env
+        "RJ_GRID_OUT=${TEST_OUTPUT_DIR}" -- /bin/sh -c "${_child_script}"
     RESULT_VARIABLE _result
     OUTPUT_VARIABLE _stdout
     ERROR_VARIABLE _stderr
@@ -104,3 +105,30 @@ foreach(_rank RANGE 0 3)
         )
     endif()
 endforeach()
+
+set(_stdin_script "${TEST_OUTPUT_DIR}/stdin.sh")
+file(
+    WRITE "${_stdin_script}"
+    [=[
+#!/bin/sh
+printf "grid-input\n" | "$RJ_EXECUTABLE" --profile mi350x --num-nodes 1 --nproc-per-node 1 -- /bin/cat
+]=]
+)
+
+execute_process(
+    COMMAND
+        "${CMAKE_COMMAND}" -E env
+        "ROCJITSU_RUNTIME_DIR=${TEST_RUNTIME_DIR}/stdin"
+        "RJ_EXECUTABLE=${TEST_EXECUTABLE}" /bin/sh "${_stdin_script}"
+    RESULT_VARIABLE _stdin_result
+    OUTPUT_VARIABLE _stdin_stdout
+    ERROR_VARIABLE _stdin_stderr
+    TIMEOUT 15
+)
+
+if(NOT _stdin_result EQUAL 0 OR NOT _stdin_stdout STREQUAL "grid-input\n")
+    message(
+        FATAL_ERROR
+        "one-rank process-grid stdin failed with ${_stdin_result}\nstdout:\n${_stdin_stdout}\nstderr:\n${_stdin_stderr}"
+    )
+endif()

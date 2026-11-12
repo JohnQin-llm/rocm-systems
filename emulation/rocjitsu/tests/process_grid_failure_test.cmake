@@ -58,6 +58,12 @@ if(NOT "${_result}" STREQUAL "42")
         "expected process-grid exit 42, got ${_result}\nstdout:\n${_stdout}\nstderr:\n${_stderr}"
     )
 endif()
+if(NOT _stderr MATCHES "process-grid rank 0 exited with status 42")
+    message(
+        FATAL_ERROR
+        "expected rank-failure diagnostic naming rank 0 and status 42\nstderr:\n${_stderr}"
+    )
+endif()
 
 if(NOT EXISTS "${TEST_OUTPUT_DIR}/term-1")
     message(

@@ -799,13 +799,8 @@ bool apply_config_option(std::string_view assignment, config::LaunchOverrides &o
     return true;
   }
   if (key == "gpus_per_node") {
-    std::optional<uint32_t> count = config::parse_uint32(value);
-    if (!count || *count == 0) {
-      std::cerr << "rocjitsu: --option gpus_per_node requires a positive integer\n";
-      return false;
-    }
-    overrides.gpus_per_node = *count;
-    return true;
+    return apply_gpus_per_node_config_option("--option gpus_per_node", value,
+                                             overrides.gpus_per_node);
   }
   if (key == "num_threads")
     return apply_unsigned_config_option(key, value, overrides.num_threads);
@@ -886,12 +881,28 @@ int child_status_to_exit_code(int status) {
 struct ProcessGridRank {
   pid_t pid = -1;
   pid_t pgid = -1;
+  uint32_t global_rank = 0;
   bool leader_running = true;
   bool group_present = true;
   bool cleanup_started = false;
   bool cleanup_escalated = false;
   std::chrono::steady_clock::time_point cleanup_started_at{};
 };
+
+void report_process_grid_rank_failure(const ProcessGridRank &rank, int status) {
+  if (WIFEXITED(status)) {
+    std::cerr << std::format("rocjitsu: process-grid rank {} exited with status {}\n",
+                             rank.global_rank, WEXITSTATUS(status));
+    return;
+  }
+  if (WIFSIGNALED(status)) {
+    std::cerr << std::format("rocjitsu: process-grid rank {} terminated by signal {}\n",
+                             rank.global_rank, WTERMSIG(status));
+    return;
+  }
+  std::cerr << std::format("rocjitsu: process-grid rank {} ended with unknown status\n",
+                           rank.global_rank);
+}
 
 bool process_group_exists(pid_t pgid) {
   if (pgid <= 0)
@@ -1010,8 +1021,50 @@ void escalate_process_grid_cleanup(std::vector<ProcessGridRank> &ranks) {
   }
 }
 
+bool reap_process_grid_children(std::vector<ProcessGridRank> &ranks, int &exit_code) {
+  bool start_shutdown = false;
+  for (;;) {
+    int status = 0;
+    const pid_t done = waitpid(-1, &status, WNOHANG);
+    if (done > 0) {
+      auto found = std::ranges::find_if(ranks, [&](const ProcessGridRank &rank) {
+        return rank.leader_running && rank.pid == done;
+      });
+      if (found == ranks.end())
+        continue;
+      found->leader_running = false;
+      const int child_exit = child_status_to_exit_code(status);
+      if (child_exit != 0 && exit_code == 0) {
+        report_process_grid_rank_failure(*found, status);
+        exit_code = child_exit;
+        start_shutdown = true;
+      }
+      continue;
+    }
+    if (done == 0)
+      return start_shutdown;
+    if (errno == EINTR)
+      continue;
+    if (errno == ECHILD) {
+      if (std::ranges::any_of(ranks, &ProcessGridRank::leader_running)) {
+        std::cerr << "rocjitsu: lost process-grid child status while ranks were still tracked\n";
+        if (exit_code == 0)
+          exit_code = 1;
+        for (ProcessGridRank &rank : ranks)
+          rank.leader_running = false;
+        return true;
+      }
+      return start_shutdown;
+    }
+    std::cerr << std::format("rocjitsu: waitpid failed: {}\n", strerror(errno));
+    if (exit_code == 0)
+      exit_code = 1;
+    return true;
+  }
+}
+
 int wait_for_process_grid(std::vector<ProcessGridRank> ranks, const sigset_t &shutdown_signals,
-                          int initial_exit_code = 0, bool terminate_now = false) {
+                          int initial_exit_code = 0, int initial_shutdown_signal = 0) {
   int exit_code = initial_exit_code;
   bool terminating = false;
   auto begin_termination = [&](int signal) {
@@ -1021,55 +1074,12 @@ int wait_for_process_grid(std::vector<ProcessGridRank> ranks, const sigset_t &sh
     terminating = true;
     refresh_process_grid_groups(ranks);
   };
-  if (terminate_now)
-    begin_termination(SIGTERM);
+  if (initial_shutdown_signal != 0)
+    begin_termination(initial_shutdown_signal);
 
   while (process_grid_has_live_work(ranks)) {
-    bool unexpected_no_children = false;
-    for (;;) {
-      int status = 0;
-      pid_t done = waitpid(-1, &status, WNOHANG);
-      if (done > 0) {
-        auto found = std::ranges::find_if(ranks, [&](const ProcessGridRank &rank) {
-          return rank.leader_running && rank.pid == done;
-        });
-        if (found == ranks.end())
-          continue;
-        found->leader_running = false;
-        const int child_exit = child_status_to_exit_code(status);
-        if (child_exit != 0) {
-          if (exit_code == 0)
-            exit_code = child_exit;
-          begin_termination(SIGTERM);
-        } else {
-          begin_process_grid_rank_cleanup(*found, SIGTERM);
-        }
-        continue;
-      }
-      if (done == 0)
-        break;
-      if (errno == EINTR)
-        continue;
-      if (errno == ECHILD) {
-        if (std::ranges::any_of(ranks, &ProcessGridRank::leader_running)) {
-          std::cerr << "rocjitsu: lost process-grid child status while ranks were still tracked\n";
-          if (exit_code == 0)
-            exit_code = 1;
-          begin_termination(SIGTERM);
-          unexpected_no_children = true;
-        }
-        break;
-      }
-      std::cerr << std::format("rocjitsu: waitpid failed: {}\n", strerror(errno));
-      if (exit_code == 0)
-        exit_code = 1;
+    if (reap_process_grid_children(ranks, exit_code))
       begin_termination(SIGTERM);
-      break;
-    }
-
-    if (unexpected_no_children)
-      for (ProcessGridRank &rank : ranks)
-        rank.leader_running = false;
 
     start_finished_rank_cleanup(ranks);
     refresh_process_grid_groups(ranks);
@@ -1098,7 +1108,10 @@ int wait_for_process_grid(std::vector<ProcessGridRank> ranks, const sigset_t &sh
   return exit_code;
 }
 
-bool redirect_process_grid_stdin() {
+bool configure_process_grid_stdin(bool inherit_stdin) {
+  if (inherit_stdin)
+    return true;
+
   const int dev_null = open("/dev/null", O_RDONLY | O_CLOEXEC);
   if (dev_null < 0) {
     std::cerr << std::format("rocjitsu: failed to open /dev/null for process-grid stdin: {}\n",
@@ -1185,6 +1198,7 @@ int launch_process_grid(char *const app_argv[], rocjitsu::launcher::LaunchEnviro
   };
 
   const pid_t launcher_pid = getpid();
+  const bool inherit_stdin = grid.world_size() == 1 && !isatty(STDIN_FILENO);
   std::vector<ProcessGridRank> children;
   children.reserve(grid.world_size());
   for (uint32_t node_rank = 0; node_rank < grid.num_nodes; ++node_rank) {
@@ -1193,7 +1207,8 @@ int launch_process_grid(char *const app_argv[], rocjitsu::launcher::LaunchEnviro
       pid_t child = fork();
       if (child < 0) {
         std::cerr << std::format("rocjitsu: fork failed: {}\n", strerror(errno));
-        const int exit_code = wait_for_process_grid(std::move(children), shutdown_signals, 1, true);
+        const int exit_code =
+            wait_for_process_grid(std::move(children), shutdown_signals, 1, SIGTERM);
         restore_launcher_state();
         return exit_code;
       }
@@ -1211,7 +1226,7 @@ int launch_process_grid(char *const app_argv[], rocjitsu::launcher::LaunchEnviro
           _exit(127);
         }
         sigprocmask(SIG_SETMASK, &previous_signals, nullptr);
-        if (!redirect_process_grid_stdin())
+        if (!configure_process_grid_stdin(inherit_stdin))
           _exit(127);
         rocjitsu::launcher::execvp_with_environment(app_argv[0], app_argv, environment);
         std::cerr << std::format("rocjitsu: execvp failed: {}\n", strerror(errno));
@@ -1221,26 +1236,44 @@ int launch_process_grid(char *const app_argv[], rocjitsu::launcher::LaunchEnviro
       if (setpgid_result != 0 && errno != EACCES && errno != ESRCH) {
         std::cerr << std::format("rocjitsu: setpgid failed: {}\n", strerror(errno));
         kill(child, SIGTERM);
-        children.push_back(ProcessGridRank{.pid = child, .pgid = child});
-        const int exit_code = wait_for_process_grid(std::move(children), shutdown_signals, 1, true);
+        children.push_back(
+            ProcessGridRank{.pid = child,
+                            .pgid = child,
+                            .global_rank = node_rank * grid.nproc_per_node + local_rank});
+        const int exit_code =
+            wait_for_process_grid(std::move(children), shutdown_signals, 1, SIGTERM);
         restore_launcher_state();
         return exit_code;
       }
-      children.push_back(ProcessGridRank{.pid = child, .pgid = child});
+      children.push_back(
+          ProcessGridRank{.pid = child,
+                          .pgid = child,
+                          .global_rank = node_rank * grid.nproc_per_node + local_rank});
 
       const timespec no_wait{.tv_sec = 0, .tv_nsec = 0};
       const int pending_signal = sigtimedwait(&shutdown_signals, nullptr, &no_wait);
-      if (pending_signal == SIGCHLD)
+      if (pending_signal == SIGCHLD) {
+        int exit_code = 0;
+        if (reap_process_grid_children(children, exit_code)) {
+          exit_code =
+              wait_for_process_grid(std::move(children), shutdown_signals, exit_code, SIGTERM);
+          restore_launcher_state();
+          return exit_code;
+        }
+        start_finished_rank_cleanup(children);
+        refresh_process_grid_groups(children);
         continue;
+      }
       if (pending_signal == SIGINT || pending_signal == SIGTERM) {
         const int exit_code = wait_for_process_grid(std::move(children), shutdown_signals,
-                                                    128 + pending_signal, true);
+                                                    128 + pending_signal, pending_signal);
         restore_launcher_state();
         return exit_code;
       }
       if (pending_signal < 0 && errno != EAGAIN && errno != EINTR) {
         std::cerr << std::format("rocjitsu: sigtimedwait failed: {}\n", strerror(errno));
-        const int exit_code = wait_for_process_grid(std::move(children), shutdown_signals, 1, true);
+        const int exit_code =
+            wait_for_process_grid(std::move(children), shutdown_signals, 1, SIGTERM);
         restore_launcher_state();
         return exit_code;
       }
@@ -1478,7 +1511,8 @@ void print_usage() {
          "  --plugin <name>   Enable an execution plugin with its default config. Repeatable.\n"
          "  --gpus-per-node <n>\n"
          "                    Override the emulated GPU count for this launch.\n"
-         "  --num-nodes <n>  Number of local emulated nodes to launch. Defaults to 1.\n"
+         "  --num-nodes <n>  Number of local rank groups to launch. Defaults to 1.\n"
+         "                    Groups share the selected config; GPU and CPU budgets are per rank.\n"
          "  --nproc-per-node <n>, --nproc_per_node <n>\n"
          "                    Number of workload processes per node. Defaults to 1.\n"
          "                    Each process gets RANK, LOCAL_RANK, WORLD_SIZE,\n"
