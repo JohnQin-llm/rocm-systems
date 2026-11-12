@@ -21,7 +21,9 @@ NCCL_PARAM(SymCTAs, "SYM_CTAS", 0)
 static constexpr float disableTime = 1.e30f;
 
 int ncclSymkModelCtasEnvOverride(enum ncclSymkKernelId kernelId) {
-  int maxBlocks = kernelId == ncclSymkKernelId_AllGather_HierLsaST ? ncclSymkAgHierMaxBlocks : ncclSymkMaxBlocks;
+  int maxBlocks = kernelId == ncclSymkKernelId_AllGather_HierLsaST     ? ncclSymkAgHierMaxBlocks :
+                  kernelId == ncclSymkKernelId_ReduceScatter_HierLsaLDST ? ncclSymkRsHierMaxBlocks :
+                                                                         ncclSymkMaxBlocks;
   int64_t nUserCTAs = ncclParamSymCTAs();
   if (nUserCTAs < 1) return 0;
   if (nUserCTAs > maxBlocks) return maxBlocks;
@@ -73,6 +75,33 @@ static bool rcclSymkAllGatherYieldsInPartitionMode(struct ncclTuningInput_t* con
   if (hasHier && ncclSymkGfx1250AllGatherPrefersHier(comm->nRanks, inputs->nBytes)) return kernelId != hier;
   if (ncclSymkGfx1250AllGatherPrefersStore(comm->nRanks, inputs->nBytes)) return kernelId != afterLL;
   return kernelId != afterLL && kernelId != ncclSymkKernelId_AllGather_LL;
+}
+
+// In gfx1250 partition mode ReduceScatter runs LL, then the hierarchical kernel from where it overtakes LL,
+// unless the user forced the choice. Where the preferred kernel can't run, such as LL for a grouped launch
+// or the others without a registered send window, the flat load kernel is next: below the crossover it
+// beats the hierarchical kernel's fixed cost, and above it LL falls far behind it from 16 MiB. Elsewhere
+// the hierarchical kernel can't run at all.
+static bool rcclSymkReduceScatterYieldsInPartitionMode(struct ncclTuningInput_t* const inputs,
+                                                       enum ncclSymkKernelId kernelId, uint32_t valid_kmask) {
+  constexpr int ll = ncclSymkKernelId_ReduceScatter_LL;
+  constexpr int ld = ncclSymkKernelId_ReduceScatter_LD;
+  constexpr int hier = ncclSymkKernelId_ReduceScatter_HierLsaLDST;
+  struct ncclComm* comm = inputs->comm;
+  if (inputs->func != ncclFuncReduceScatter || !ncclSymkIsGfx1250(comm) || !comm->hasMloPart ||
+      comm->tuningContext.forced[inputs->func]) {
+    return false;
+  }
+  // The same conditions ncclTuningSymkModelSim puts on LL (no grouping) and on the rest (a registered send).
+  bool sendReg = inputs->winRegType == ncclSymSendRegRecvReg || inputs->winRegType == ncclSymSendRegRecvNonreg;
+  bool hierFirst = ncclSymkGfx1250ReduceScatterPrefersHier(comm->nRanks, inputs->nBytes);
+  for (int k : {hierFirst ? hier : ll, ld, hierFirst ? ll : hier}) {
+    if ((valid_kmask >> k & 1) && (inputs->tuningMask >> (NCCL_TUNING_SYM_KERNEL_ID_OFFSET + k) & 1) &&
+        (k == ll ? inputs->nWorks <= 1 : sendReg)) {
+      return kernelId != k;
+    }
+  }
+  return false;  // None of the three can run; leave the choice to the cost model.
 }
 
 static int rcclSymkCalculateWarps(struct ncclTuningInput_t* const inputs, enum ncclSymkKernelId kernelId) {
@@ -135,7 +164,8 @@ ncclResult_t ncclTuningSymkModelSim(struct ncclTuningInput_t* const inputs, stru
 
 #if defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
   if (rcclSymkAllGatherLLYieldsToST(inputs, (enum ncclSymkKernelId)tuning->symKernelId, valid_kmask) ||
-      rcclSymkAllGatherYieldsInPartitionMode(inputs, (enum ncclSymkKernelId)tuning->symKernelId, valid_kmask)) {
+      rcclSymkAllGatherYieldsInPartitionMode(inputs, (enum ncclSymkKernelId)tuning->symKernelId, valid_kmask) ||
+      rcclSymkReduceScatterYieldsInPartitionMode(inputs, (enum ncclSymkKernelId)tuning->symKernelId, valid_kmask)) {
     tuning->valid = 0;
     tuning->timeUs = -1.0;
     return ncclSuccess;

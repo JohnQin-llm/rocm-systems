@@ -107,7 +107,7 @@ def enumerate_kernels():
   # AllGather_TmaSTMC and the other *MC algos need multimem, which ROCm has no
   # equivalent for, so they stay out regardless of the target.
   ar_algos = ["AGxLL_R","RSxLD_AGxST"] + (["RSxTmaLD_AGxTmaST"] if have_tdm else [])
-  rs_algos = ["LL","LD","RailA2A_LsaLD"] + (["TmaLD"] if have_tdm else [])
+  rs_algos = ["LL","LD","RailA2A_LsaLD","HierLsaLDST"] + (["TmaLD"] if have_tdm else [])
   for algo in ag_algos:
     yield Rec(coll="AllGather", algo=algo)
   for red in all_reds:
