@@ -28,6 +28,7 @@
 #include "rocjitsu/kmd/linux/amdgpu_properties.h"
 #include "rocjitsu/kmd/linux/rpc.h"
 #include "rocjitsu/vm/amdgpu/partitioning.h"
+#include "rocjitsu/vm/plugins/plugin_library_name.h"
 #include "util/diagnostic.h"
 
 #include "embedded_schema.h"
@@ -356,8 +357,6 @@ std::vector<std::string> discover_runtime_plugins(const std::string &runtime_lib
   if (runtime_lib_path.empty())
     return {};
 
-  constexpr std::string_view prefix = "librocjitsu_plugin_";
-  constexpr std::string_view suffix = ".so";
   std::vector<std::string> names;
   const std::filesystem::path plugin_dir = std::filesystem::path(runtime_lib_path).parent_path();
   std::error_code error;
@@ -365,10 +364,11 @@ std::vector<std::string> discover_runtime_plugins(const std::string &runtime_lib
   const std::filesystem::directory_iterator end;
   for (; !error && it != end; it.increment(error)) {
     const std::string filename = it->path().filename().string();
-    if (!filename.starts_with(prefix) || !filename.ends_with(suffix))
+    if (!filename.starts_with(kPluginLibraryPrefix) || !filename.ends_with(kPluginLibrarySuffix))
       continue;
     std::string name =
-        filename.substr(prefix.size(), filename.size() - prefix.size() - suffix.size());
+        filename.substr(kPluginLibraryPrefix.size(), filename.size() - kPluginLibraryPrefix.size() -
+                                                         kPluginLibrarySuffix.size());
     if (!name.empty())
       names.emplace_back(std::move(name));
   }
@@ -432,6 +432,8 @@ void print_emulators(bool json, bool long_output) {
     std::cout << "\n";
     std::cout << "    },\n";
     write_json_string_array("options", options);
+    rocjitsu::cli::write_json_string_field(std::cout, "plugins_source",
+                                           "files found beside librocjitsu.so");
     write_json_string_array("plugins", plugins, false);
     std::cout << "  }\n";
     std::cout << "]\n";
@@ -445,7 +447,7 @@ void print_emulators(bool json, bool long_output) {
     std::cout << "  runtime:   " << (installed ? runtime : "not found") << "\n";
     std::cout << "  supported: yes  (" << support_reason << ")\n";
     std::cout << "  options:   " << name_list(options) << "\n";
-    std::cout << "  plugins:   " << name_list(plugins) << "\n";
+    std::cout << "  plugins beside librocjitsu.so: " << name_list(plugins) << "\n";
     return;
   }
 
@@ -453,6 +455,12 @@ void print_emulators(bool json, bool long_output) {
   std::cout << std::format("{:<13} {:<10} {:<10} {}\n", "rocjitsu*", installed ? "yes" : "no",
                            "yes", description);
   std::cout << "\n* = default backend for rocjitsu launches\n";
+}
+
+void print_emulators_usage() {
+  std::cerr << "Usage: rocjitsu emulators [-l|--long] [--json]\n"
+               "\n"
+               "List the emulator backends this rocjitsu CLI can run.\n";
 }
 
 void print_paths(bool json) {
@@ -492,12 +500,6 @@ void print_paths_usage() {
   std::cerr << "Usage: rocjitsu paths [--json]\n"
                "\n"
                "Print the config search roots and runtime paths the rocjitsu CLI uses.\n";
-}
-
-void print_emulators_usage() {
-  std::cerr << "Usage: rocjitsu emulators [-l|--long] [--json]\n"
-               "\n"
-               "List the emulator backends this rocjitsu CLI can run.\n";
 }
 
 void cleanup_runtime_files(const std::filesystem::path &invocation_runtime_dir) {
@@ -654,15 +656,6 @@ bool append_env_override(std::string_view assignment,
   return true;
 }
 
-std::optional<int32_t> parse_int32(std::string_view text) {
-  int32_t value = 0;
-  const std::from_chars_result result =
-      std::from_chars(text.data(), text.data() + text.size(), value);
-  if (result.ec != std::errc{} || result.ptr != text.data() + text.size())
-    return std::nullopt;
-  return value;
-}
-
 bool apply_unsigned_config_option(std::string_view key, std::string_view value,
                                   std::optional<uint32_t> &target) {
   target = config::parse_uint32(value);
@@ -712,9 +705,8 @@ bool apply_config_option(std::string_view assignment, config::LaunchOverrides &o
   if (key == "cpu_dispatch_threads")
     return apply_unsigned_config_option(key, value, overrides.cpu_dispatch_threads);
   if (key == "async_helper_threads") {
-    overrides.async_helper_threads = parse_int32(value);
-    if (!overrides.async_helper_threads || *overrides.async_helper_threads < -1 ||
-        *overrides.async_helper_threads > 128) {
+    overrides.async_helper_threads = config::parse_async_helper_threads(value);
+    if (!overrides.async_helper_threads) {
       std::cerr << "rocjitsu: --option async_helper_threads requires -1 or a nonnegative integer "
                    "up to 128\n";
       return false;
@@ -1138,7 +1130,7 @@ int main(int argc, char *argv[]) {
         std::cerr << "rocjitsu: --exec-mode requires functional or clocked\n";
         return 1;
       }
-      overrides.exec_mode = std::string(parsed_value);
+      flag_overrides.exec_mode = std::string(parsed_value);
       continue;
     }
     const OptionValueResult plugin_result =
@@ -1161,7 +1153,7 @@ int main(int argc, char *argv[]) {
         std::cerr << "rocjitsu: --gpus-per-node requires a positive integer\n";
         return 1;
       }
-      overrides.gpus_per_node = *count;
+      flag_overrides.gpus_per_node = *count;
       continue;
     }
 
@@ -1314,6 +1306,10 @@ int main(int argc, char *argv[]) {
     }
   }
 
+  if (flag_overrides.exec_mode)
+    overrides.exec_mode = flag_overrides.exec_mode;
+  if (flag_overrides.gpus_per_node)
+    overrides.gpus_per_node = flag_overrides.gpus_per_node;
   if (flag_overrides.cpu_thread_budget)
     overrides.cpu_thread_budget = flag_overrides.cpu_thread_budget;
   if (flag_overrides.wait_checking)
@@ -1407,6 +1403,10 @@ int main(int argc, char *argv[]) {
   }
   if (!local_node.empty() && attach_mode) {
     std::cerr << "rocjitsu: --node cannot be combined with --attach\n";
+    return 1;
+  }
+  if (attach_mode && !overrides.empty()) {
+    std::cerr << "rocjitsu: launch config overrides cannot be combined with --attach\n";
     return 1;
   }
 
@@ -1616,6 +1616,13 @@ int main(int argc, char *argv[]) {
                                                  "--option async_helper_threads",
                                                  "async_helper_threads", dbt_guest_config))
     return 1;
+  if (!overrides.empty() && dbt_guest_config.enabled &&
+      !dbt_guest_config.host.simulator_config_path.empty()) {
+    std::cerr << std::format("rocjitsu: launch config overrides cannot be combined with a "
+                             "dbt_guest simulator_config; set them in {} instead\n",
+                             dbt_guest_config.host.simulator_config_path);
+    return 1;
+  }
 
   if (!write_config_for_this_launch())
     return 1;

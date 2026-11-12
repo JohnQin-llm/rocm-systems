@@ -238,6 +238,30 @@ add_test(
         --thread-budget-table
 )
 add_test(
+    NAME RocjitsuOptionDedicatedExecModeWinsBeforeGeneric
+    COMMAND
+        $<TARGET_FILE:rocjitsu_bin> --profile mi350x --exec-mode clocked
+        --option exec_mode=functional --thread-budget-table
+)
+add_test(
+    NAME RocjitsuOptionDedicatedExecModeWinsAfterGeneric
+    COMMAND
+        $<TARGET_FILE:rocjitsu_bin> --profile mi350x --option
+        exec_mode=functional --exec-mode clocked --thread-budget-table
+)
+add_test(
+    NAME RocjitsuOptionDedicatedGpusPerNodeWinsBeforeGeneric
+    COMMAND
+        $<TARGET_FILE:rocjitsu_bin> --profile mi350x --gpus-per-node 2 --option
+        gpus_per_node=1 --thread-budget-table
+)
+add_test(
+    NAME RocjitsuOptionDedicatedGpusPerNodeWinsAfterGeneric
+    COMMAND
+        $<TARGET_FILE:rocjitsu_bin> --profile mi350x --option gpus_per_node=1
+        --gpus-per-node 2 --thread-budget-table
+)
+add_test(
     NAME RocjitsuOptionExecModeClocked
     COMMAND
         $<TARGET_FILE:rocjitsu_bin> --profile mi350x --option exec_mode=clocked
@@ -267,7 +291,17 @@ set_tests_properties(
     PROPERTIES PASS_REGULAR_EXPRESSION "Configured \\| 8 \\| 1 \\| 0 \\| 8"
 )
 set_tests_properties(
+    RocjitsuOptionDedicatedExecModeWinsBeforeGeneric
+    RocjitsuOptionDedicatedExecModeWinsAfterGeneric
+    PROPERTIES PASS_REGULAR_EXPRESSION "Configured \\| 8 \\| 1 \\| 0 \\| 8"
+)
+set_tests_properties(
     RocjitsuOptionGpusPerNode
+    PROPERTIES PASS_REGULAR_EXPRESSION "Configured \\| 8 \\| 17,17 \\| 8 \\| 48"
+)
+set_tests_properties(
+    RocjitsuOptionDedicatedGpusPerNodeWinsBeforeGeneric
+    RocjitsuOptionDedicatedGpusPerNodeWinsAfterGeneric
     PROPERTIES PASS_REGULAR_EXPRESSION "Configured \\| 8 \\| 17,17 \\| 8 \\| 48"
 )
 set_tests_properties(
