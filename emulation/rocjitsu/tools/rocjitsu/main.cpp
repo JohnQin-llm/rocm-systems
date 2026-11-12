@@ -28,6 +28,7 @@
 #include "rocjitsu/kmd/linux/amdgpu_properties.h"
 #include "rocjitsu/kmd/linux/rpc.h"
 #include "rocjitsu/vm/amdgpu/partitioning.h"
+#include "rocjitsu/vm/plugins/plugin_config_resolver.h"
 #include "rocjitsu/vm/plugins/plugin_library_name.h"
 #include "util/diagnostic.h"
 
@@ -721,6 +722,44 @@ bool reject_process_grid_environment_overrides(
     return true;
   }
   return false;
+}
+
+bool config_requests_file_sink(std::string_view json) {
+  flexbuffers::Builder builder;
+  if (!rocjitsu::plugin_detail::flexbuffer_from_json(std::string(json), builder))
+    return false;
+
+  const flexbuffers::Reference root = flexbuffers::GetRoot(builder.GetBuffer());
+  if (!root.IsMap())
+    return false;
+  const flexbuffers::Reference sinks = root.AsMap()["sinks"];
+  if (!sinks.IsMap())
+    return false;
+  const flexbuffers::Reference types = sinks.AsMap()["types"];
+  const flexbuffers::Reference dir = sinks.AsMap()["dir"];
+  if (!types.IsVector() || !dir.IsString() || std::string_view(dir.AsString().c_str()).empty())
+    return false;
+
+  const flexbuffers::Vector items = types.AsVector();
+  for (size_t i = 0; i < items.size(); ++i) {
+    const flexbuffers::Reference item = items[i];
+    if (item.IsString() && std::string_view(item.AsString().c_str()) == "file")
+      return true;
+  }
+  return false;
+}
+
+bool reject_process_grid_file_sinks(std::string_view config_path) {
+  util::StringDiagnostic diagnostic;
+  rocjitsu::FailureOr<std::string> json =
+      rocjitsu::config::read_config_file(std::string(config_path), diagnostic.emitter());
+  if (json.failed())
+    return false;
+  if (!config_requests_file_sink(json.value()))
+    return false;
+  std::cerr << "rocjitsu: process grid does not support config file sinks because ranks would "
+               "share the same plugin log paths; remove sinks type 'file' or run one rank\n";
+  return true;
 }
 
 void set_default_environment(rocjitsu::launcher::LaunchEnvironment &environment,
@@ -1990,6 +2029,8 @@ int main(int argc, char *argv[]) {
     std::cerr << std::format("rocjitsu: config file not found: {}\n", abs_config);
     return 1;
   }
+  if (process_grid.requested && !abs_config.empty() && reject_process_grid_file_sinks(abs_config))
+    return 1;
 
   // Attaching joins a daemon that already built its machine from its own config,
   // so these overrides cannot change it.

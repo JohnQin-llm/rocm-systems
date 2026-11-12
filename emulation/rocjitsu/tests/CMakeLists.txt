@@ -328,6 +328,14 @@ add_test(
         ${_rj_cli_failure_script}
 )
 add_test(
+    NAME RocjitsuProcessGridRejectsFileSink
+    COMMAND
+        ${CMAKE_COMMAND} "-DTEST_EXECUTABLE=$<TARGET_FILE:rocjitsu_bin>"
+        "-DTEST_ARGS=--config;${CMAKE_CURRENT_SOURCE_DIR}/fixtures/process_grid_file_sink_config.json;--nproc-per-node;2;--;/usr/bin/true"
+        "-DTEST_REGEX=process grid does not support config file sinks" -P
+        ${_rj_cli_failure_script}
+)
+add_test(
     NAME RocjitsuProcessGridRejectsThreadBudgetTable
     COMMAND
         ${CMAKE_COMMAND} "-DTEST_EXECUTABLE=$<TARGET_FILE:rocjitsu_bin>"
