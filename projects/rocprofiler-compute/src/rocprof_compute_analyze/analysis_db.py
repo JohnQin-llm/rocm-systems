@@ -1801,9 +1801,9 @@ class db_analysis(OmniAnalyze_Base):
                 zip(roofline_data_df["Metric"], roofline_data_df["Value"])
             )
             # The database column stays hbm_cache_data. gfx1201 names the
-            # device-memory point AI GDDR6; MI and the other archs keep AI HBM.
+            # device-memory point AI VRAM; MI and the other archs keep AI HBM.
             device_memory_ai = (
-                "AI HBM" if "AI HBM" in roofline_data_expressions else "AI GDDR6"
+                "AI HBM" if "AI HBM" in roofline_data_expressions else "AI VRAM"
             )
             roofline_names = {
                 "total_flops": "Performance (GFLOPs)",
