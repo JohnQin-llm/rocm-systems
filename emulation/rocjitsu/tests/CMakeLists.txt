@@ -298,12 +298,12 @@ set_tests_properties(
 )
 set_tests_properties(
     RocjitsuOptionGpusPerNode
-    PROPERTIES PASS_REGULAR_EXPRESSION "Configured \\| 8 \\| 17,17 \\| 8 \\| 48"
+    PROPERTIES PASS_REGULAR_EXPRESSION "Configured \\| 8 \\| 17,17 \\| 0 \\| 40"
 )
 set_tests_properties(
     RocjitsuOptionDedicatedGpusPerNodeWinsBeforeGeneric
     RocjitsuOptionDedicatedGpusPerNodeWinsAfterGeneric
-    PROPERTIES PASS_REGULAR_EXPRESSION "Configured \\| 8 \\| 17,17 \\| 8 \\| 48"
+    PROPERTIES PASS_REGULAR_EXPRESSION "Configured \\| 8 \\| 17,17 \\| 0 \\| 40"
 )
 set_tests_properties(
     RocjitsuOptionThreadFields
