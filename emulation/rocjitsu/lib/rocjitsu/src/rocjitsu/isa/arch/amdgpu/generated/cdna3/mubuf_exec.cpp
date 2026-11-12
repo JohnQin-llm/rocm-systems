@@ -29,7 +29,8 @@ namespace rocjitsu {
 namespace cdna3 {
 
 void BufferLoadFormatXMubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->is_load = true;
   d->mtype = amdgpu::mtype_from_flags_gfx940(inst_.sc0, inst_.sc1, inst_.nt);
   d->non_temporal = inst_.nt;
@@ -52,7 +53,8 @@ void BufferLoadFormatXMubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferLoadFormatXyMubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->is_load = true;
   d->mtype = amdgpu::mtype_from_flags_gfx940(inst_.sc0, inst_.sc1, inst_.nt);
   d->non_temporal = inst_.nt;
@@ -75,7 +77,8 @@ void BufferLoadFormatXyMubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferLoadFormatXyzMubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->is_load = true;
   d->mtype = amdgpu::mtype_from_flags_gfx940(inst_.sc0, inst_.sc1, inst_.nt);
   d->non_temporal = inst_.nt;
@@ -98,7 +101,8 @@ void BufferLoadFormatXyzMubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferLoadFormatXyzwMubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->is_load = true;
   d->mtype = amdgpu::mtype_from_flags_gfx940(inst_.sc0, inst_.sc1, inst_.nt);
   d->non_temporal = inst_.nt;
@@ -121,7 +125,8 @@ void BufferLoadFormatXyzwMubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferStoreFormatXMubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->is_load = false;
   d->mtype = amdgpu::mtype_from_flags_gfx940(inst_.sc0, inst_.sc1, inst_.nt);
   d->non_temporal = inst_.nt;
@@ -140,7 +145,8 @@ void BufferStoreFormatXMubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferStoreFormatXyMubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->is_load = false;
   d->mtype = amdgpu::mtype_from_flags_gfx940(inst_.sc0, inst_.sc1, inst_.nt);
   d->non_temporal = inst_.nt;
@@ -159,7 +165,8 @@ void BufferStoreFormatXyMubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferStoreFormatXyzMubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->is_load = false;
   d->mtype = amdgpu::mtype_from_flags_gfx940(inst_.sc0, inst_.sc1, inst_.nt);
   d->non_temporal = inst_.nt;
@@ -178,7 +185,8 @@ void BufferStoreFormatXyzMubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferStoreFormatXyzwMubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->is_load = false;
   d->mtype = amdgpu::mtype_from_flags_gfx940(inst_.sc0, inst_.sc1, inst_.nt);
   d->non_temporal = inst_.nt;
@@ -197,7 +205,8 @@ void BufferStoreFormatXyzwMubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferLoadFormatD16XMubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->is_load = true;
   d->mtype = amdgpu::mtype_from_flags_gfx940(inst_.sc0, inst_.sc1, inst_.nt);
   d->non_temporal = inst_.nt;
@@ -222,7 +231,8 @@ void BufferLoadFormatD16XMubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferLoadFormatD16XyMubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->is_load = true;
   d->mtype = amdgpu::mtype_from_flags_gfx940(inst_.sc0, inst_.sc1, inst_.nt);
   d->non_temporal = inst_.nt;
@@ -247,7 +257,8 @@ void BufferLoadFormatD16XyMubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferLoadFormatD16XyzMubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->is_load = true;
   d->mtype = amdgpu::mtype_from_flags_gfx940(inst_.sc0, inst_.sc1, inst_.nt);
   d->non_temporal = inst_.nt;
@@ -272,7 +283,8 @@ void BufferLoadFormatD16XyzMubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferLoadFormatD16XyzwMubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->is_load = true;
   d->mtype = amdgpu::mtype_from_flags_gfx940(inst_.sc0, inst_.sc1, inst_.nt);
   d->non_temporal = inst_.nt;
@@ -297,7 +309,8 @@ void BufferLoadFormatD16XyzwMubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferStoreFormatD16XMubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->is_load = false;
   d->mtype = amdgpu::mtype_from_flags_gfx940(inst_.sc0, inst_.sc1, inst_.nt);
   d->non_temporal = inst_.nt;
@@ -318,7 +331,8 @@ void BufferStoreFormatD16XMubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferStoreFormatD16XyMubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->is_load = false;
   d->mtype = amdgpu::mtype_from_flags_gfx940(inst_.sc0, inst_.sc1, inst_.nt);
   d->non_temporal = inst_.nt;
@@ -339,7 +353,8 @@ void BufferStoreFormatD16XyMubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferStoreFormatD16XyzMubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->is_load = false;
   d->mtype = amdgpu::mtype_from_flags_gfx940(inst_.sc0, inst_.sc1, inst_.nt);
   d->non_temporal = inst_.nt;
@@ -360,7 +375,8 @@ void BufferStoreFormatD16XyzMubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferStoreFormatD16XyzwMubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->is_load = false;
   d->mtype = amdgpu::mtype_from_flags_gfx940(inst_.sc0, inst_.sc1, inst_.nt);
   d->non_temporal = inst_.nt;
@@ -382,7 +398,8 @@ void BufferStoreFormatD16XyzwMubuf::execute_impl(amdgpu::Wavefront &wf) {
 
 void BufferLoadUbyteMubuf::execute_impl(amdgpu::Wavefront &wf) {
   if (inst_.lds) {
-    auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+    std::unique_ptr<amdgpu::VectorMemState> d =
+        acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
     d->elem_size = 1;
     d->num_elems = 1;
     d->is_load = true;
@@ -398,7 +415,8 @@ void BufferLoadUbyteMubuf::execute_impl(amdgpu::Wavefront &wf) {
     set_data(std::move(d));
     return;
   }
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->dst_reg_base = wf.vgpr_alloc().base + (inst_.acc ? 256u : 0u) + inst_.vdata;
   d->elem_size = 1;
   d->num_elems = 1;
@@ -412,7 +430,8 @@ void BufferLoadUbyteMubuf::execute_impl(amdgpu::Wavefront &wf) {
 
 void BufferLoadSbyteMubuf::execute_impl(amdgpu::Wavefront &wf) {
   if (inst_.lds) {
-    auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+    std::unique_ptr<amdgpu::VectorMemState> d =
+        acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
     d->elem_size = 1;
     d->num_elems = 1;
     d->is_load = true;
@@ -428,7 +447,8 @@ void BufferLoadSbyteMubuf::execute_impl(amdgpu::Wavefront &wf) {
     set_data(std::move(d));
     return;
   }
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->dst_reg_base = wf.vgpr_alloc().base + (inst_.acc ? 256u : 0u) + inst_.vdata;
   d->elem_size = 1;
   d->num_elems = 1;
@@ -443,7 +463,8 @@ void BufferLoadSbyteMubuf::execute_impl(amdgpu::Wavefront &wf) {
 
 void BufferLoadUshortMubuf::execute_impl(amdgpu::Wavefront &wf) {
   if (inst_.lds) {
-    auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+    std::unique_ptr<amdgpu::VectorMemState> d =
+        acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
     d->elem_size = 2;
     d->num_elems = 1;
     d->is_load = true;
@@ -459,7 +480,8 @@ void BufferLoadUshortMubuf::execute_impl(amdgpu::Wavefront &wf) {
     set_data(std::move(d));
     return;
   }
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->dst_reg_base = wf.vgpr_alloc().base + (inst_.acc ? 256u : 0u) + inst_.vdata;
   d->elem_size = 2;
   d->num_elems = 1;
@@ -473,7 +495,8 @@ void BufferLoadUshortMubuf::execute_impl(amdgpu::Wavefront &wf) {
 
 void BufferLoadSshortMubuf::execute_impl(amdgpu::Wavefront &wf) {
   if (inst_.lds) {
-    auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+    std::unique_ptr<amdgpu::VectorMemState> d =
+        acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
     d->elem_size = 2;
     d->num_elems = 1;
     d->is_load = true;
@@ -489,7 +512,8 @@ void BufferLoadSshortMubuf::execute_impl(amdgpu::Wavefront &wf) {
     set_data(std::move(d));
     return;
   }
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->dst_reg_base = wf.vgpr_alloc().base + (inst_.acc ? 256u : 0u) + inst_.vdata;
   d->elem_size = 2;
   d->num_elems = 1;
@@ -504,7 +528,8 @@ void BufferLoadSshortMubuf::execute_impl(amdgpu::Wavefront &wf) {
 
 void BufferLoadDwordMubuf::execute_impl(amdgpu::Wavefront &wf) {
   if (inst_.lds) {
-    auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+    std::unique_ptr<amdgpu::VectorMemState> d =
+        acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
     d->elem_size = 4;
     d->num_elems = 1;
     d->is_load = true;
@@ -520,7 +545,8 @@ void BufferLoadDwordMubuf::execute_impl(amdgpu::Wavefront &wf) {
     set_data(std::move(d));
     return;
   }
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->dst_reg_base = wf.vgpr_alloc().base + (inst_.acc ? 256u : 0u) + inst_.vdata;
   d->elem_size = 4;
   d->num_elems = 1;
@@ -534,7 +560,8 @@ void BufferLoadDwordMubuf::execute_impl(amdgpu::Wavefront &wf) {
 
 void BufferLoadDwordx2Mubuf::execute_impl(amdgpu::Wavefront &wf) {
   if (inst_.lds) {
-    auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+    std::unique_ptr<amdgpu::VectorMemState> d =
+        acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
     d->elem_size = 4;
     d->num_elems = 2;
     d->is_load = true;
@@ -550,7 +577,8 @@ void BufferLoadDwordx2Mubuf::execute_impl(amdgpu::Wavefront &wf) {
     set_data(std::move(d));
     return;
   }
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->dst_reg_base = wf.vgpr_alloc().base + (inst_.acc ? 256u : 0u) + inst_.vdata;
   d->elem_size = 4;
   d->num_elems = 2;
@@ -564,7 +592,8 @@ void BufferLoadDwordx2Mubuf::execute_impl(amdgpu::Wavefront &wf) {
 
 void BufferLoadDwordx3Mubuf::execute_impl(amdgpu::Wavefront &wf) {
   if (inst_.lds) {
-    auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+    std::unique_ptr<amdgpu::VectorMemState> d =
+        acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
     d->elem_size = 4;
     d->num_elems = 3;
     d->is_load = true;
@@ -580,7 +609,8 @@ void BufferLoadDwordx3Mubuf::execute_impl(amdgpu::Wavefront &wf) {
     set_data(std::move(d));
     return;
   }
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->dst_reg_base = wf.vgpr_alloc().base + (inst_.acc ? 256u : 0u) + inst_.vdata;
   d->elem_size = 4;
   d->num_elems = 3;
@@ -594,7 +624,8 @@ void BufferLoadDwordx3Mubuf::execute_impl(amdgpu::Wavefront &wf) {
 
 void BufferLoadDwordx4Mubuf::execute_impl(amdgpu::Wavefront &wf) {
   if (inst_.lds) {
-    auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+    std::unique_ptr<amdgpu::VectorMemState> d =
+        acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
     d->elem_size = 4;
     d->num_elems = 4;
     d->is_load = true;
@@ -610,7 +641,8 @@ void BufferLoadDwordx4Mubuf::execute_impl(amdgpu::Wavefront &wf) {
     set_data(std::move(d));
     return;
   }
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->dst_reg_base = wf.vgpr_alloc().base + (inst_.acc ? 256u : 0u) + inst_.vdata;
   d->elem_size = 4;
   d->num_elems = 4;
@@ -623,7 +655,8 @@ void BufferLoadDwordx4Mubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferStoreByteMubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->elem_size = 1;
   d->num_elems = 1;
   d->is_load = false;
@@ -645,7 +678,8 @@ void BufferStoreByteMubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferStoreByteD16HiMubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->elem_size = 1;
   d->num_elems = 1;
   d->is_load = false;
@@ -668,7 +702,8 @@ void BufferStoreByteD16HiMubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferStoreShortMubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->elem_size = 2;
   d->num_elems = 1;
   d->is_load = false;
@@ -690,7 +725,8 @@ void BufferStoreShortMubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferStoreShortD16HiMubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->elem_size = 2;
   d->num_elems = 1;
   d->is_load = false;
@@ -713,7 +749,8 @@ void BufferStoreShortD16HiMubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferStoreDwordMubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->elem_size = 4;
   d->num_elems = 1;
   d->is_load = false;
@@ -735,7 +772,8 @@ void BufferStoreDwordMubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferStoreDwordx2Mubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->elem_size = 4;
   d->num_elems = 2;
   d->is_load = false;
@@ -759,7 +797,8 @@ void BufferStoreDwordx2Mubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferStoreDwordx3Mubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->elem_size = 4;
   d->num_elems = 3;
   d->is_load = false;
@@ -785,7 +824,8 @@ void BufferStoreDwordx3Mubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferStoreDwordx4Mubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->elem_size = 4;
   d->num_elems = 4;
   d->is_load = false;
@@ -814,7 +854,8 @@ void BufferStoreDwordx4Mubuf::execute_impl(amdgpu::Wavefront &wf) {
 
 void BufferLoadUbyteD16Mubuf::execute_impl(amdgpu::Wavefront &wf) {
   if (inst_.lds) {
-    auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+    std::unique_ptr<amdgpu::VectorMemState> d =
+        acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
     d->elem_size = 1;
     d->num_elems = 1;
     d->is_load = true;
@@ -830,7 +871,8 @@ void BufferLoadUbyteD16Mubuf::execute_impl(amdgpu::Wavefront &wf) {
     set_data(std::move(d));
     return;
   }
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->dst_reg_base = wf.vgpr_alloc().base + (inst_.acc ? 256u : 0u) + inst_.vdata;
   d->elem_size = 1;
   d->num_elems = 1;
@@ -845,7 +887,8 @@ void BufferLoadUbyteD16Mubuf::execute_impl(amdgpu::Wavefront &wf) {
 
 void BufferLoadUbyteD16HiMubuf::execute_impl(amdgpu::Wavefront &wf) {
   if (inst_.lds) {
-    auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+    std::unique_ptr<amdgpu::VectorMemState> d =
+        acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
     d->elem_size = 1;
     d->num_elems = 1;
     d->is_load = true;
@@ -861,7 +904,8 @@ void BufferLoadUbyteD16HiMubuf::execute_impl(amdgpu::Wavefront &wf) {
     set_data(std::move(d));
     return;
   }
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->dst_reg_base = wf.vgpr_alloc().base + (inst_.acc ? 256u : 0u) + inst_.vdata;
   d->elem_size = 1;
   d->num_elems = 1;
@@ -876,7 +920,8 @@ void BufferLoadUbyteD16HiMubuf::execute_impl(amdgpu::Wavefront &wf) {
 
 void BufferLoadSbyteD16Mubuf::execute_impl(amdgpu::Wavefront &wf) {
   if (inst_.lds) {
-    auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+    std::unique_ptr<amdgpu::VectorMemState> d =
+        acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
     d->elem_size = 1;
     d->num_elems = 1;
     d->is_load = true;
@@ -892,7 +937,8 @@ void BufferLoadSbyteD16Mubuf::execute_impl(amdgpu::Wavefront &wf) {
     set_data(std::move(d));
     return;
   }
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->dst_reg_base = wf.vgpr_alloc().base + (inst_.acc ? 256u : 0u) + inst_.vdata;
   d->elem_size = 1;
   d->num_elems = 1;
@@ -908,7 +954,8 @@ void BufferLoadSbyteD16Mubuf::execute_impl(amdgpu::Wavefront &wf) {
 
 void BufferLoadSbyteD16HiMubuf::execute_impl(amdgpu::Wavefront &wf) {
   if (inst_.lds) {
-    auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+    std::unique_ptr<amdgpu::VectorMemState> d =
+        acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
     d->elem_size = 1;
     d->num_elems = 1;
     d->is_load = true;
@@ -924,7 +971,8 @@ void BufferLoadSbyteD16HiMubuf::execute_impl(amdgpu::Wavefront &wf) {
     set_data(std::move(d));
     return;
   }
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->dst_reg_base = wf.vgpr_alloc().base + (inst_.acc ? 256u : 0u) + inst_.vdata;
   d->elem_size = 1;
   d->num_elems = 1;
@@ -940,7 +988,8 @@ void BufferLoadSbyteD16HiMubuf::execute_impl(amdgpu::Wavefront &wf) {
 
 void BufferLoadShortD16Mubuf::execute_impl(amdgpu::Wavefront &wf) {
   if (inst_.lds) {
-    auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+    std::unique_ptr<amdgpu::VectorMemState> d =
+        acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
     d->elem_size = 2;
     d->num_elems = 1;
     d->is_load = true;
@@ -956,7 +1005,8 @@ void BufferLoadShortD16Mubuf::execute_impl(amdgpu::Wavefront &wf) {
     set_data(std::move(d));
     return;
   }
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->dst_reg_base = wf.vgpr_alloc().base + (inst_.acc ? 256u : 0u) + inst_.vdata;
   d->elem_size = 2;
   d->num_elems = 1;
@@ -971,7 +1021,8 @@ void BufferLoadShortD16Mubuf::execute_impl(amdgpu::Wavefront &wf) {
 
 void BufferLoadShortD16HiMubuf::execute_impl(amdgpu::Wavefront &wf) {
   if (inst_.lds) {
-    auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+    std::unique_ptr<amdgpu::VectorMemState> d =
+        acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
     d->elem_size = 2;
     d->num_elems = 1;
     d->is_load = true;
@@ -987,7 +1038,8 @@ void BufferLoadShortD16HiMubuf::execute_impl(amdgpu::Wavefront &wf) {
     set_data(std::move(d));
     return;
   }
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->dst_reg_base = wf.vgpr_alloc().base + (inst_.acc ? 256u : 0u) + inst_.vdata;
   d->elem_size = 2;
   d->num_elems = 1;
@@ -1001,7 +1053,8 @@ void BufferLoadShortD16HiMubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferLoadFormatD16HiXMubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->is_load = true;
   d->mtype = amdgpu::mtype_from_flags_gfx940(inst_.sc0, inst_.sc1, inst_.nt);
   d->non_temporal = inst_.nt;
@@ -1026,7 +1079,8 @@ void BufferLoadFormatD16HiXMubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferStoreFormatD16HiXMubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->is_load = false;
   d->mtype = amdgpu::mtype_from_flags_gfx940(inst_.sc0, inst_.sc1, inst_.nt);
   d->non_temporal = inst_.nt;
@@ -1055,7 +1109,8 @@ void BufferInvMubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferAtomicSwapMubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->dst_reg_base = wf.vgpr_alloc().base + (inst_.acc ? 256u : 0u) + inst_.vdata;
   d->elem_size = 4;
   d->num_elems = 1;
@@ -1079,7 +1134,8 @@ void BufferAtomicSwapMubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferAtomicCmpswapMubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->dst_reg_base = wf.vgpr_alloc().base + (inst_.acc ? 256u : 0u) + inst_.vdata;
   d->elem_size = 4;
   d->num_elems = 1;
@@ -1105,7 +1161,8 @@ void BufferAtomicCmpswapMubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferAtomicAddMubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->dst_reg_base = wf.vgpr_alloc().base + (inst_.acc ? 256u : 0u) + inst_.vdata;
   d->elem_size = 4;
   d->num_elems = 1;
@@ -1129,7 +1186,8 @@ void BufferAtomicAddMubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferAtomicSubMubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->dst_reg_base = wf.vgpr_alloc().base + (inst_.acc ? 256u : 0u) + inst_.vdata;
   d->elem_size = 4;
   d->num_elems = 1;
@@ -1153,7 +1211,8 @@ void BufferAtomicSubMubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferAtomicSminMubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->dst_reg_base = wf.vgpr_alloc().base + (inst_.acc ? 256u : 0u) + inst_.vdata;
   d->elem_size = 4;
   d->num_elems = 1;
@@ -1177,7 +1236,8 @@ void BufferAtomicSminMubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferAtomicUminMubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->dst_reg_base = wf.vgpr_alloc().base + (inst_.acc ? 256u : 0u) + inst_.vdata;
   d->elem_size = 4;
   d->num_elems = 1;
@@ -1201,7 +1261,8 @@ void BufferAtomicUminMubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferAtomicSmaxMubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->dst_reg_base = wf.vgpr_alloc().base + (inst_.acc ? 256u : 0u) + inst_.vdata;
   d->elem_size = 4;
   d->num_elems = 1;
@@ -1225,7 +1286,8 @@ void BufferAtomicSmaxMubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferAtomicUmaxMubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->dst_reg_base = wf.vgpr_alloc().base + (inst_.acc ? 256u : 0u) + inst_.vdata;
   d->elem_size = 4;
   d->num_elems = 1;
@@ -1249,7 +1311,8 @@ void BufferAtomicUmaxMubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferAtomicAndMubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->dst_reg_base = wf.vgpr_alloc().base + (inst_.acc ? 256u : 0u) + inst_.vdata;
   d->elem_size = 4;
   d->num_elems = 1;
@@ -1273,7 +1336,8 @@ void BufferAtomicAndMubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferAtomicOrMubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->dst_reg_base = wf.vgpr_alloc().base + (inst_.acc ? 256u : 0u) + inst_.vdata;
   d->elem_size = 4;
   d->num_elems = 1;
@@ -1297,7 +1361,8 @@ void BufferAtomicOrMubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferAtomicXorMubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->dst_reg_base = wf.vgpr_alloc().base + (inst_.acc ? 256u : 0u) + inst_.vdata;
   d->elem_size = 4;
   d->num_elems = 1;
@@ -1321,7 +1386,8 @@ void BufferAtomicXorMubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferAtomicIncMubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->dst_reg_base = wf.vgpr_alloc().base + (inst_.acc ? 256u : 0u) + inst_.vdata;
   d->elem_size = 4;
   d->num_elems = 1;
@@ -1345,7 +1411,8 @@ void BufferAtomicIncMubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferAtomicDecMubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->dst_reg_base = wf.vgpr_alloc().base + (inst_.acc ? 256u : 0u) + inst_.vdata;
   d->elem_size = 4;
   d->num_elems = 1;
@@ -1369,7 +1436,8 @@ void BufferAtomicDecMubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferAtomicAddF32Mubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->dst_reg_base = wf.vgpr_alloc().base + (inst_.acc ? 256u : 0u) + inst_.vdata;
   d->elem_size = 4;
   d->num_elems = 1;
@@ -1396,7 +1464,8 @@ void BufferAtomicAddF32Mubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferAtomicPkAddF16Mubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->dst_reg_base = wf.vgpr_alloc().base + (inst_.acc ? 256u : 0u) + inst_.vdata;
   d->elem_size = 4;
   d->num_elems = 1;
@@ -1420,7 +1489,8 @@ void BufferAtomicPkAddF16Mubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferAtomicAddF64Mubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->dst_reg_base = wf.vgpr_alloc().base + (inst_.acc ? 256u : 0u) + inst_.vdata;
   d->elem_size = 8;
   d->num_elems = 1;
@@ -1449,7 +1519,8 @@ void BufferAtomicAddF64Mubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferAtomicMinF64Mubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->dst_reg_base = wf.vgpr_alloc().base + (inst_.acc ? 256u : 0u) + inst_.vdata;
   d->elem_size = 8;
   d->num_elems = 1;
@@ -1478,7 +1549,8 @@ void BufferAtomicMinF64Mubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferAtomicMaxF64Mubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->dst_reg_base = wf.vgpr_alloc().base + (inst_.acc ? 256u : 0u) + inst_.vdata;
   d->elem_size = 8;
   d->num_elems = 1;
@@ -1507,7 +1579,8 @@ void BufferAtomicMaxF64Mubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferAtomicSwapX2Mubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->dst_reg_base = wf.vgpr_alloc().base + (inst_.acc ? 256u : 0u) + inst_.vdata;
   d->elem_size = 8;
   d->num_elems = 1;
@@ -1533,7 +1606,8 @@ void BufferAtomicSwapX2Mubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferAtomicCmpswapX2Mubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->dst_reg_base = wf.vgpr_alloc().base + (inst_.acc ? 256u : 0u) + inst_.vdata;
   d->elem_size = 8;
   d->num_elems = 1;
@@ -1563,7 +1637,8 @@ void BufferAtomicCmpswapX2Mubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferAtomicAddX2Mubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->dst_reg_base = wf.vgpr_alloc().base + (inst_.acc ? 256u : 0u) + inst_.vdata;
   d->elem_size = 8;
   d->num_elems = 1;
@@ -1589,7 +1664,8 @@ void BufferAtomicAddX2Mubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferAtomicSubX2Mubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->dst_reg_base = wf.vgpr_alloc().base + (inst_.acc ? 256u : 0u) + inst_.vdata;
   d->elem_size = 8;
   d->num_elems = 1;
@@ -1615,7 +1691,8 @@ void BufferAtomicSubX2Mubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferAtomicSminX2Mubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->dst_reg_base = wf.vgpr_alloc().base + (inst_.acc ? 256u : 0u) + inst_.vdata;
   d->elem_size = 8;
   d->num_elems = 1;
@@ -1641,7 +1718,8 @@ void BufferAtomicSminX2Mubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferAtomicUminX2Mubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->dst_reg_base = wf.vgpr_alloc().base + (inst_.acc ? 256u : 0u) + inst_.vdata;
   d->elem_size = 8;
   d->num_elems = 1;
@@ -1667,7 +1745,8 @@ void BufferAtomicUminX2Mubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferAtomicSmaxX2Mubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->dst_reg_base = wf.vgpr_alloc().base + (inst_.acc ? 256u : 0u) + inst_.vdata;
   d->elem_size = 8;
   d->num_elems = 1;
@@ -1693,7 +1772,8 @@ void BufferAtomicSmaxX2Mubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferAtomicUmaxX2Mubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->dst_reg_base = wf.vgpr_alloc().base + (inst_.acc ? 256u : 0u) + inst_.vdata;
   d->elem_size = 8;
   d->num_elems = 1;
@@ -1719,7 +1799,8 @@ void BufferAtomicUmaxX2Mubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferAtomicAndX2Mubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->dst_reg_base = wf.vgpr_alloc().base + (inst_.acc ? 256u : 0u) + inst_.vdata;
   d->elem_size = 8;
   d->num_elems = 1;
@@ -1745,7 +1826,8 @@ void BufferAtomicAndX2Mubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferAtomicOrX2Mubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->dst_reg_base = wf.vgpr_alloc().base + (inst_.acc ? 256u : 0u) + inst_.vdata;
   d->elem_size = 8;
   d->num_elems = 1;
@@ -1771,7 +1853,8 @@ void BufferAtomicOrX2Mubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferAtomicXorX2Mubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->dst_reg_base = wf.vgpr_alloc().base + (inst_.acc ? 256u : 0u) + inst_.vdata;
   d->elem_size = 8;
   d->num_elems = 1;
@@ -1797,7 +1880,8 @@ void BufferAtomicXorX2Mubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferAtomicIncX2Mubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->dst_reg_base = wf.vgpr_alloc().base + (inst_.acc ? 256u : 0u) + inst_.vdata;
   d->elem_size = 8;
   d->num_elems = 1;
@@ -1823,7 +1907,8 @@ void BufferAtomicIncX2Mubuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void BufferAtomicDecX2Mubuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->dst_reg_base = wf.vgpr_alloc().base + (inst_.acc ? 256u : 0u) + inst_.vdata;
   d->elem_size = 8;
   d->num_elems = 1;

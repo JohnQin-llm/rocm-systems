@@ -67,7 +67,8 @@ public:
 
   static amdgpu::VmAccessOutcome route_memory_inst(amdgpu::ComputeUnitCore &cu, Instruction *inst,
                                                    amdgpu::Wavefront &wf) {
-    return cu.route_memory_inst(inst, wf);
+    std::unique_ptr<Instruction> owner(inst);
+    return cu.route_memory_inst(owner, wf);
   }
 };
 

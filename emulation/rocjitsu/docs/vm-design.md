@@ -142,8 +142,24 @@ safely: its tag includes the full address-space handle generation and
 translation epoch. Root replacement or slot reuse consequently misses without
 allowing stale code from the prior namespace to alias.
 
-This bypass is a safe intermediate state, not the final physical-cache model. A
-future translated data-cache implementation must key lines by physical
+Each CU also has a bounded cache of decoded instructions. It checks the complete
+freshly fetched word window and VMID before reuse; it does not bypass instruction
+fetch or code-coherence checks. Ordinary memory instructions return to this cache
+only after synchronous writeback and wait-counter release. Retry and deferred
+completion retain exclusive ownership in the pipeline. Tensor DMA continuations
+and debugger execution do not use decoded reuse.
+
+Retired scalar/vector memory state is hidden from observers and releases its VM
+snapshot and image-sampling state immediately. The next execution acquires that
+storage exclusively, resets all semantic fields from constructor defaults, then
+publishes the prepared state. Only cleared transfer/request buffers survive
+retirement, each capped at 4 KiB of capacity. The six retained vector buffers use
+at most 24 KiB per entry (6 MiB for all 256 slots in a CU), plus fixed state and
+decoded-object storage. Oversized buffers are released at retirement; this host
+allocation policy does not limit simulated transfer sizes.
+
+The translated data-cache bypass is an intermediate state. A future translated
+data-cache implementation must key lines by physical
 backing/domain identity plus translated line address and retain the backing
 snapshot needed for eviction. Until that contract exists, routing translated
 data through the legacy caches would permit dirty lines from an old binding to

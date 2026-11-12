@@ -26,7 +26,8 @@ namespace rocjitsu {
 namespace rdna2 {
 
 void TbufferLoadFormatXMtbuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->is_load = true;
   d->mtype = amdgpu::mtype_from_flags_gfx10(inst_.glc, inst_.dlc, inst_.slc);
   d->non_temporal = 0;
@@ -44,7 +45,8 @@ void TbufferLoadFormatXMtbuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void TbufferLoadFormatXyMtbuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->is_load = true;
   d->mtype = amdgpu::mtype_from_flags_gfx10(inst_.glc, inst_.dlc, inst_.slc);
   d->non_temporal = 0;
@@ -62,7 +64,8 @@ void TbufferLoadFormatXyMtbuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void TbufferLoadFormatXyzMtbuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->is_load = true;
   d->mtype = amdgpu::mtype_from_flags_gfx10(inst_.glc, inst_.dlc, inst_.slc);
   d->non_temporal = 0;
@@ -80,7 +83,8 @@ void TbufferLoadFormatXyzMtbuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void TbufferLoadFormatXyzwMtbuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->is_load = true;
   d->mtype = amdgpu::mtype_from_flags_gfx10(inst_.glc, inst_.dlc, inst_.slc);
   d->non_temporal = 0;
@@ -98,7 +102,8 @@ void TbufferLoadFormatXyzwMtbuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void TbufferStoreFormatXMtbuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->is_load = false;
   d->mtype = amdgpu::mtype_from_flags_gfx10(inst_.glc, inst_.dlc, inst_.slc);
   d->non_temporal = 0;
@@ -116,7 +121,8 @@ void TbufferStoreFormatXMtbuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void TbufferStoreFormatXyMtbuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->is_load = false;
   d->mtype = amdgpu::mtype_from_flags_gfx10(inst_.glc, inst_.dlc, inst_.slc);
   d->non_temporal = 0;
@@ -134,7 +140,8 @@ void TbufferStoreFormatXyMtbuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void TbufferStoreFormatXyzMtbuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->is_load = false;
   d->mtype = amdgpu::mtype_from_flags_gfx10(inst_.glc, inst_.dlc, inst_.slc);
   d->non_temporal = 0;
@@ -152,7 +159,8 @@ void TbufferStoreFormatXyzMtbuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void TbufferStoreFormatXyzwMtbuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->is_load = false;
   d->mtype = amdgpu::mtype_from_flags_gfx10(inst_.glc, inst_.dlc, inst_.slc);
   d->non_temporal = 0;
@@ -170,7 +178,8 @@ void TbufferStoreFormatXyzwMtbuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void TbufferLoadFormatD16XMtbuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->is_load = true;
   d->mtype = amdgpu::mtype_from_flags_gfx10(inst_.glc, inst_.dlc, inst_.slc);
   d->non_temporal = 0;
@@ -190,7 +199,8 @@ void TbufferLoadFormatD16XMtbuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void TbufferLoadFormatD16XyMtbuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->is_load = true;
   d->mtype = amdgpu::mtype_from_flags_gfx10(inst_.glc, inst_.dlc, inst_.slc);
   d->non_temporal = 0;
@@ -210,7 +220,8 @@ void TbufferLoadFormatD16XyMtbuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void TbufferLoadFormatD16XyzMtbuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->is_load = true;
   d->mtype = amdgpu::mtype_from_flags_gfx10(inst_.glc, inst_.dlc, inst_.slc);
   d->non_temporal = 0;
@@ -230,7 +241,8 @@ void TbufferLoadFormatD16XyzMtbuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void TbufferLoadFormatD16XyzwMtbuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->is_load = true;
   d->mtype = amdgpu::mtype_from_flags_gfx10(inst_.glc, inst_.dlc, inst_.slc);
   d->non_temporal = 0;
@@ -250,7 +262,8 @@ void TbufferLoadFormatD16XyzwMtbuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void TbufferStoreFormatD16XMtbuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->is_load = false;
   d->mtype = amdgpu::mtype_from_flags_gfx10(inst_.glc, inst_.dlc, inst_.slc);
   d->non_temporal = 0;
@@ -270,7 +283,8 @@ void TbufferStoreFormatD16XMtbuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void TbufferStoreFormatD16XyMtbuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->is_load = false;
   d->mtype = amdgpu::mtype_from_flags_gfx10(inst_.glc, inst_.dlc, inst_.slc);
   d->non_temporal = 0;
@@ -290,7 +304,8 @@ void TbufferStoreFormatD16XyMtbuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void TbufferStoreFormatD16XyzMtbuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->is_load = false;
   d->mtype = amdgpu::mtype_from_flags_gfx10(inst_.glc, inst_.dlc, inst_.slc);
   d->non_temporal = 0;
@@ -310,7 +325,8 @@ void TbufferStoreFormatD16XyzMtbuf::execute_impl(amdgpu::Wavefront &wf) {
 }
 
 void TbufferStoreFormatD16XyzwMtbuf::execute_impl(amdgpu::Wavefront &wf) {
-  auto d = std::make_unique<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
+  std::unique_ptr<amdgpu::VectorMemState> d =
+      acquire_data<amdgpu::VectorMemState>(amdgpu::GLOBAL_MEM);
   d->is_load = false;
   d->mtype = amdgpu::mtype_from_flags_gfx10(inst_.glc, inst_.dlc, inst_.slc);
   d->non_temporal = 0;

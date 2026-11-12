@@ -1523,9 +1523,9 @@ protected:
   void tick_pipelines();
 
   /// @brief Route a memory instruction into the appropriate pipeline.
-  /// @param inst The memory instruction (ownership transferred).
+  /// @param inst The memory instruction, retained only after synchronous completion.
   /// @param wf The issuing wavefront.
-  VmAccessOutcome route_memory_inst(Instruction *inst, Wavefront &wf);
+  VmAccessOutcome route_memory_inst(std::unique_ptr<Instruction> &inst, Wavefront &wf);
 
   [[nodiscard]] bool owns_memory_result_vgprs(const Wavefront &wf, uint32_t base,
                                               uint32_t count) const {

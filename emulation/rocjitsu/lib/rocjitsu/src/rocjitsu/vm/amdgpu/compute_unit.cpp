@@ -1129,7 +1129,8 @@ void ComputeUnitCore::tick_pipelines() {
     tensor_dma_pipeline_.tick();
 }
 
-VmAccessOutcome ComputeUnitCore::route_memory_inst(Instruction *inst, Wavefront &wf) {
+VmAccessOutcome ComputeUnitCore::route_memory_inst(std::unique_ptr<Instruction> &inst,
+                                                   Wavefront &wf) {
   if (observes_memory_instruction_routing_)
     plugin_group_->onAmdgpuRouteMemoryInstruction(*inst, wf);
   const bool observe_routed_access =
@@ -1237,7 +1238,7 @@ VmAccessOutcome ComputeUnitCore::route_memory_inst(Instruction *inst, Wavefront 
   case GLOBAL_MEM:
     return global_mem_pipeline_.issue_deferred(inst, wf);
   default:
-    delete inst;
+    inst.reset();
     return VmAccessOutcome::Malformed;
   }
 }
@@ -2583,7 +2584,7 @@ ComputeUnitCore::issue_instruction_impl(Wavefront *active, MaybeAsyncWindow<Enab
         auto *d = inst->data_as<VectorMemState>();
         d->issue_pc = active->pc;
       }
-      const VmAccessOutcome memory_outcome = route_memory_inst(decoded.value().release(), *active);
+      const VmAccessOutcome memory_outcome = route_memory_inst(decoded.value(), *active);
       if (memory_outcome != VmAccessOutcome::Complete) {
         if (memory_outcome == VmAccessOutcome::Unavailable) {
           request_functional_yield();
@@ -2599,6 +2600,8 @@ ComputeUnitCore::issue_instruction_impl(Wavefront *active, MaybeAsyncWindow<Enab
         handle_memory_access_failure(*active, memory_outcome, issue_pc);
         return IssueOutcome::Issued;
       }
+      if (decoded.value())
+        decoded.value()->retire_data();
     }
   }
 
