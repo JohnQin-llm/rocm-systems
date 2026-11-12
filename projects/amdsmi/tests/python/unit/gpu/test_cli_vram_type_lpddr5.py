@@ -9,7 +9,7 @@ the highest real enum value (``LPDDR5`` == 31), and the auto-generated
 ``amdsmi_vram_type_t__enumvalues`` map resolves that shared key to the ``__MAX``
 label. ``static.py`` special-cases the ``__MAX`` value and must translate it to
 ``LPDDR5``; it was previously mislabelled ``GDDR7``, which surfaced on gfx117x
-APUs whose unified memory reports as LPDDR5.
+APUs whose unified memory reports as LPDDR5. Also covers VRAM max_bandwidth in CSV.
 
 ``static.py`` is loaded through cli_search_order, so a plain checkout
 exercises the code under development; an explicit AMDSMI_PATH pins that install.
@@ -191,9 +191,10 @@ class TestCliVramTypeLpddr5(unittest.TestCase):
         stub_modules(cls, _fake_modules(cls.holder))
         cls.static_module = _load_static_module()
 
-    def _run_vram(self, vram_type_value, fmt="human"):
+    def _run_vram(self, vram_type_value, fmt="human", field="type", max_bandwidth="N/A"):
         info = copy.deepcopy(_BASE_VRAM_INFO)
         info["vram_type"] = vram_type_value
+        info["vram_max_bandwidth"] = max_bandwidth
         self.holder["info"] = info
 
         commands = object.__new__(self.static_module.StaticCommands)
@@ -210,7 +211,7 @@ class TestCliVramTypeLpddr5(unittest.TestCase):
             static_dict = commands.logger.captured_values
         self.assertIsNotNone(static_dict, "static_gpu stored no values payload")
         self.assertIn("vram", static_dict)
-        return static_dict["vram"]["type"]
+        return static_dict["vram"][field]
 
     def test_max_value_maps_to_lpddr5_human(self):
         # AMDSMI_VRAM_TYPE__MAX == LPDDR5 == 31; must not be mislabelled GDDR7.
@@ -224,3 +225,7 @@ class TestCliVramTypeLpddr5(unittest.TestCase):
 
     def test_non_max_type_unaffected(self):
         self.assertEqual(self._run_vram(22, "human"), "GDDR6")
+
+    def test_max_bandwidth_reported_in_csv(self):
+        # CSV was left at the N/A placeholder while JSON carried the value.
+        self.assertEqual(self._run_vram(1, "csv", field="max_bandwidth", max_bandwidth=8000), 8000)

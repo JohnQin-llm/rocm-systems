@@ -1093,6 +1093,7 @@ class StaticCommands:
                 # Populate vram_max_bandwidth
                 vram_max_bw = vram_info["vram_max_bandwidth"]
                 vram_max_bw_unit = "GB/s"
+                vram_info_dict["max_bandwidth"] = vram_max_bw
                 if self.logger.is_human_readable_format():
                     vram_info_dict["max_bandwidth"] = (
                         f"{vram_max_bw} {vram_max_bw_unit if vram_max_bw != 'N/A' else ''}"

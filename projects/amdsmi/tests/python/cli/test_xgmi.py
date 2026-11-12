@@ -12,9 +12,11 @@ from cli.base import TestCliBase
 
 class TestXgmi(TestCliBase):
     def test_multiple_gpus_csv(self) -> None:
-        if len(self.list_data) < 2:
-            self.skipTest("requires at least two GPUs")
-        selected = [entry["gpu"] for entry in self.list_data[:2]]
+        # xgmi skips non-primary partitions, so only partition 0 devices report rows.
+        primaries = [entry["gpu"] for entry in self.list_data if entry.get("partition_id") == 0]
+        if len(primaries) < 2:
+            self.skipTest("requires at least two primary-partition GPUs")
+        selected = primaries[:2]
         cmd = f"amd-smi xgmi -g {' '.join(map(str, selected))} --csv"
         rc, output, stderr = self.util.RunCmdSync(cmd)
         self.assertEqual(rc, self.PASS, f"{cmd}: {stderr}")
