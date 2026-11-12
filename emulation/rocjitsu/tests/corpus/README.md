@@ -282,6 +282,9 @@ second group asserts a result value.
 | `test_meter_extract.py` | Unit tests for the extractor. Run by ctest. |
 | `meter_score.py` | Compares an emulated run against a hardware run and scores it. Owns the decision of *what* is compared; read its module docstring before reading any number it prints. `--json` emits the scored comparison. |
 | `meter_report.py` | Turns one or more of those JSON payloads into a self-contained Markdown or HTML report: coverage, accuracy per category, the log2-ratio spread and its histogram, what the model gets wrong, model-versus-model, and the wall-clock cost of running the model. Adds no data to the comparison. |
+| `meter_rank.py` | Scores an emulated run on *ranking*: among variants of one case (eager / compiled / triton), does the model order them as hardware does, and how far off is its speedup. See `docs/timing-mi355x.md`. |
+| `meter_fit.py` | Fits `meter_refit.py`'s composition knobs to a hardware reference by differential evolution, with a train/test split by variant group, and reports absolute and ranking accuracy on both. |
+| `streamk_gemv_repro.py` | Minimal hipBLASLt Stream-K reproducer (1x4096 @ 4096x4096) for the scalar-memory flag-polling hang described in `docs/timing-mi355x.md`. |
 
 `meter_report.py --selftest` renders a synthetic payload in a temporary
 directory, checks that the hand-computed statistics reach both formats, that
