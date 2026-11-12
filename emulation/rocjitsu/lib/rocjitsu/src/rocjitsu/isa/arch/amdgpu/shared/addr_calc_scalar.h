@@ -34,8 +34,10 @@ uint64_t smem_calculate_address(const SmemInst &inst, amdgpu::Wavefront &wf) {
   const uint32_t sbase_sel = inst.sbase * 2;
   uint64_t base = amdgpu::read_scalar_selector64(wf, sbase_sel);
   uint64_t off = 0;
-  if (inst.soffset_en)
-    off += amdgpu::read_scalar_selector(wf, inst.soffset);
+  // IMM=0 with SOE=0 names the offset SGPR in the OFFSET field.
+  if (inst.soffset_en || !inst.imm)
+    off += amdgpu::read_scalar_selector(wf, inst.soffset_en ? inst.soffset
+                                                            : inst.offset & 0x7F);
   if (inst.imm)
     off += static_cast<int64_t>(static_cast<int32_t>(inst.offset << 11) >> 11);
   uint64_t addr = base + off;
