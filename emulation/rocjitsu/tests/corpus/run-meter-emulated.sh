@@ -15,7 +15,7 @@ set -uo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 rocjitsu_root=$(cd "$here/../.." && pwd)
 
-config="$rocjitsu_root/configs/gfx950_mi355x_kmd.json"
+config="$rocjitsu_root/configs/gfx950_mi355x_kmd_timing.json"
 tuning="$rocjitsu_root/Testing/tuning/gfx950-calibrated.json"
 binary="$rocjitsu_root/build/tools/rocjitsu/rocjitsu"
 python_bin="${METER_PYTHON:-$HOME/venv-torch7/bin/python}"

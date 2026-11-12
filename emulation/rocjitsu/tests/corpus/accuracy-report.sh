@@ -9,7 +9,7 @@ set -euo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 rocjitsu_root=$(cd "$here/../.." && pwd)
 
-config="$rocjitsu_root/configs/gfx950_mi355x_kmd.json"
+config="$rocjitsu_root/configs/gfx950_mi355x_kmd_timing.json"
 reference="$rocjitsu_root/Testing/results/meter-real-gfx950.json"
 outdir="$rocjitsu_root/Testing/reports"
 label="des"

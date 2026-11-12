@@ -181,6 +181,8 @@ WaitCounter wait_counter_for(amdgpu::WaitCounterType type) {
   switch (type) {
   case amdgpu::WaitCounterType::VMCNT:
   case amdgpu::WaitCounterType::LOADCNT:
+  // Image sample loads are vector reads with their own counter on gfx12.
+  case amdgpu::WaitCounterType::SAMPLECNT:
     return WaitCounter::VectorLoad;
   case amdgpu::WaitCounterType::VSCNT:
   case amdgpu::WaitCounterType::STORECNT:

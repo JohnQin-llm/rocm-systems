@@ -23,6 +23,8 @@ target_link_libraries(
         rocjitsu_kmd
         rocjitsu_vm
         rocjitsu_vm_amdgpu
+        rocjitsu_timing_clock
+        rocjitsu_timing
         rocjitsu_plugin_loader
         rocjitsu_vm_risc_v
         rocjitsu_config

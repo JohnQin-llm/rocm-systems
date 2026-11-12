@@ -5,6 +5,7 @@
 
 #include "rocjitsu/vm/timing/dispatch_des.h"
 
+#include <cassert>
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -19,6 +20,16 @@ std::uint64_t frequency_hz(double megahertz) {
   return hertz > 0.0 ? static_cast<std::uint64_t>(hertz) : 1'000'000'000ULL;
 }
 
+simdojo::ClockDomain make_domain(const char *name, double megahertz) {
+  // frequency_hz() never returns zero; clamp to what a tick can represent so
+  // a mistyped clock in the config cannot make create() fail.
+  const std::uint64_t hz =
+      std::min<std::uint64_t>(frequency_hz(megahertz), simdojo::TICKS_PER_SECOND);
+  auto domain = simdojo::ClockDomain::create(name, hz);
+  assert(domain.has_value());
+  return std::move(domain).value();
+}
+
 std::uint64_t packed_key(std::uint32_t dispatch_id, std::uint32_t queue_id) {
   // Both halves, never the dispatch id alone. Ids are allocated per command
   // processor and a multi-die part has one per die, so they collide across
@@ -29,9 +40,9 @@ std::uint64_t packed_key(std::uint32_t dispatch_id, std::uint32_t queue_id) {
 } // namespace
 
 TimingPlane::TimingPlane(Tuning tuning)
-    : tuning_(std::move(tuning)), shader_("shader", frequency_hz(tuning_.clock_mhz)),
-      fabric_("fabric", frequency_hz(tuning_.clock_mhz)),
-      memory_("memory", frequency_hz(tuning_.clock_mhz)) {
+    : tuning_(std::move(tuning)), shader_(make_domain("shader", tuning_.clock_mhz)),
+      fabric_(make_domain("fabric", tuning_.clock_mhz)),
+      memory_(make_domain("memory", tuning_.clock_mhz)) {
   // Opened once, appended per dispatch, closed by the destructor. Line
   // buffered rather than block buffered: a run that is killed for taking too
   // long is exactly the run whose trace is worth having.

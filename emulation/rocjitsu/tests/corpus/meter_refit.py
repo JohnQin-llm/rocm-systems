@@ -506,7 +506,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--traces", required=True)
     parser.add_argument("--real", required=True)
     parser.add_argument("--clock-mhz", type=float, default=2100.0)
-    parser.add_argument("--config", default="configs/gfx950_mi355x_kmd.json")
+    parser.add_argument("--config", default="configs/gfx950_mi355x_kmd_timing.json")
     parser.add_argument(
         "--verify",
         action="store_true",

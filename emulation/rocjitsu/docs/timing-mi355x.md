@@ -27,7 +27,7 @@ Everything follows `tests/corpus/README.md`; the additions are in **bold**.
    segment (`eager` / `compiled` / `triton`); pairs closer than `--noise-pct`
    on hardware are ignored.
 5. **Fit the composition knobs**:
-   `python3 tests/corpus/meter_fit.py --shards emu --traces traces --real real-gfx950.json --config configs/gfx950_mi355x_kmd.json --out fit.json`.
+   `python3 tests/corpus/meter_fit.py --shards emu --traces traces --real real-gfx950.json --config configs/gfx950_mi355x_kmd_timing.json --out fit.json`.
    Differential evolution over `meter_refit.py`'s knobs in log space, on a
    per-category-averaged Huber loss of `log2(model / measured)`. Train and test
    are split by *variant group*, so the eager and compiled versions of a case
@@ -80,8 +80,10 @@ label_SK_Fixup:                          ; consumer
   s_store_dword s75(=0), s[34:35], s73 glc    ; reset flag[tile]
 ```
 
-This branch forked from develop on 2026-08-25 and is missing two scalar-memory
-fixes that landed afterwards. Both are needed; either one alone still hangs.
+The timing stack was first developed on a branch cut from develop on
+2026-08-25, which is missing two scalar-memory fixes that landed afterwards.
+Both are needed; either one alone still hangs. Current develop carries both,
+so the rebased stack needs no backport.
 
 | | Bug | Effect | Upstream fix |
 |---|---|---|---|
@@ -94,15 +96,36 @@ of the hung dispatch went to one address. A smaller Stream-K grid
 hung, and neither did the other gemm shapes, whose chosen kernels also assign
 whole tiles.
 
-The backport is minimal: `effective_mtype(instruction, page)` now decides K$
-bypass in `L1ScalarCache::load/load_bytes/store`, and `smem_calculate_address`
-reads `offset & 0x7f` as the SGPR when IMM=0. With it, the 3393 unit tests pass,
+With both fixes (verified first as a minimal backport onto the old branch:
+`effective_mtype(instruction, page)` deciding K$ bypass in
+`L1ScalarCache::load/load_bytes/store`, and `smem_calculate_address` reading
+`offset & 0x7f` as the SGPR when IMM=0), the unit tests pass,
 `tests/corpus/streamk_gemv_repro.py` finishes in about 50 s for float32, float16
 and bfloat16 (the float32 max error matches the hardware run bit for bit), and
 the six corpus cases finish in one to two minutes each.
 
+## Rebase onto develop
+
+The stack was rebased onto develop 4f024fa57b (2026-11-12). Unit tests: 9884
+pass, the same as develop plus the 25 timing tests; the three failures
+(`EffectiveConfigTest.*LaunchConfigHandoff`, which need the CLI launcher's
+environment, and `MemoryBackingDeathTest.MetadataBatchRetriesAfterHelperLoss`)
+and the `hsa_init_test` link failure (the container's ROCr 7.2.1 lacks newer
+`hsa_amd_*` entry points) reproduce on develop itself. Under the emulator, 58
+meter cases (launch, triad, copy, rms_norm, swiglu, attention_qk, gemm
+including the Stream-K 1x4096x4096 case) pass, and their uncalibrated modelled
+times match the pre-rebase run at a median ratio of 1.000 (range 0.921-1.006,
+the low end being the Stream-K gemm).
+
+Not carried over: mirage's timing support (`--timing`, `--timing-tuning`),
+because develop restructured mirage's agent definitions. The timed config is
+`configs/gfx950_mi355x_kmd_timing.json`; its functional part is the MI350X kmd
+config, whose 288 compute units the timing plane folds onto its 256 modelled
+ones by index, as before the rebase.
+
 ## Open items
 
+- Port mirage's timing support to develop's mirage.
 - Re-run the whole corpus with the fixed emulator. Bug 1 affected every kernel
   that uses the IMM=0 SMEM form, so traces recorded before the fix may carry
   wrong addresses even where the computed results passed the meter's

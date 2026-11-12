@@ -4,9 +4,8 @@
 rocjitsu reads one config and there is no search path, which is deliberate: a
 run's timing has to be reproducible from a single artefact.  The calibrated
 values are measurements against hardware and are not in this repository, so
-something has to put the two together before the emulator sees them.  mirage
-does it with `--timing-tuning`; this does it for a config handed to rocjitsu
-directly.
+something has to put the two together before the emulator sees them; this
+does it for a config handed to rocjitsu directly.
 
 The overlay only ever *sets* keys inside `timing.machine`.  It cannot add a
 block, rename anything, or reach outside that object, so a bad overlay produces

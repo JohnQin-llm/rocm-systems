@@ -140,9 +140,11 @@ typed config load runs with unexpected fields skipped, so a timing block on the
 typed path would be dropped in silence and the plane would run entirely on
 fallbacks with nothing to say it had.
 
-mirage writes this block from its agent table; see `mirage/docs/timing.md`.
-`--timing-tuning PATH` overlays a separate file, which is where calibrated
-values live: they are measurements against hardware rather than properties
+The shipped block is in `configs/gfx950_mi355x_kmd_timing.json` (the MI350X kmd config plus the
+block; the deprecated `gfx950_mi355x*` names must stay identical to MI350X).
+mirage's `--timing-tuning` support is not carried on this branch;
+`tests/corpus/merge-tuning.py` overlays a separate file, which is where
+calibrated values live: they are measurements against hardware rather than properties
 derivable from a datasheet, and they are not in this repository.
 
 ### Two kinds of number

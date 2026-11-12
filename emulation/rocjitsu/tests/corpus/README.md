@@ -322,12 +322,12 @@ ABI version does not match, so a partial rebuild is a diagnostic rather than a
 mystery. Build the whole target list.
 
 **3. Select the model in the architecture config.** The `timing` block of
-`configs/gfx950_mi355x_kmd.json` names it. Copy the config per model rather
+`configs/gfx950_mi355x_kmd_timing.json` names it. Copy the config per model rather
 than editing one in place, so a run's config is recoverable afterwards:
 
 ```sh
 sed 's/"model": "leaky"/"model": "des"/' \
-    configs/gfx950_mi355x_kmd.json > /tmp/gfx950-des.json
+    configs/gfx950_mi355x_kmd_timing.json > /tmp/gfx950-des.json
 ```
 
 For the untimed baseline of step 6, take a copy with the whole `timing` block
