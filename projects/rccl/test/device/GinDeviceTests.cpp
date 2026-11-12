@@ -20,6 +20,7 @@
 #include "nccl_device/gin/proxy/gin_proxy_device_host_common.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <iomanip>
 #include <vector>
@@ -797,6 +798,95 @@ TEST_F(GinDeviceTest, PostGfd_MultiPeer) {
           << "peer " << p << " slot " << s << " was unexpectedly written";
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// PostGfd_VisibleToHostWhileKernelRuns (AICOMRCCL-3634): the CPU proxy must see a GFD while the posting kernel is
+//   still running. The kernel posts, then spins until the host acks. The host plays the proxy: it polls the
+//   host-mapped queue (per-qword flag bits, as proxyGinPollGfd does) and only then sets the ack. If the GFD stores
+//   linger in L2 until kernel exit (the non-temporal fallback), the host never sees the GFD, gives up after
+//   kHostTimeoutMs and the round is counted as missed.
+//   The test instantiates postGfdImpl<false> directly, so it needs no DWORDX4_INTRINSICS_FORCE_OFF build.
+//   Several rounds on one queue: the reported failure was worst after the first round of a process.
+// ---------------------------------------------------------------------------
+
+__global__ void kernelPostGfdThenWaitForHostAck(ncclGinProxyGpuCtx_t* ctx, ncclGinProxyGfd_t* gfdIn, uint32_t peer,
+                                                uint32_t* ack) {
+  // Explicitly the fallback store flavour (UseDwordx4=false), independent of how this binary was built.
+  nccl::gin::proxy::postGfdImpl</*UseDwordx4=*/false>(ncclCoopCta{}, ctx, gfdIn, peer);
+  if (threadIdx.x == 0) {
+    // System-scope acquire: the ack is written by the host while this kernel runs.
+    while (__hip_atomic_load(ack, __ATOMIC_ACQUIRE, __HIP_MEMORY_SCOPE_SYSTEM) == 0) {
+    }
+  }
+}
+
+TEST_F(GinDeviceTest, PostGfd_VisibleToHostWhileKernelRuns) {
+  constexpr uint32_t kNranks = 2;
+  constexpr uint32_t kQueueSize = 16; // >= kRounds so postGfd never waits for credits (nothing advances cis).
+  constexpr uint32_t kRounds = 4;
+  constexpr uint32_t kPeer = 1;
+  constexpr int kHostTimeoutMs = 2000;
+
+  // The queue lives in pinned host memory, as in production, so the host observes exactly what the GPU made visible.
+  ncclGinProxyGfd_t* hQueues = nullptr;
+  uint32_t* hAck = nullptr;
+  HIP_CHECK(hipHostMalloc(reinterpret_cast<void**>(&hQueues), kNranks * kQueueSize * sizeof(ncclGinProxyGfd_t)));
+  HIP_CHECK(hipHostMalloc(reinterpret_cast<void**>(&hAck), sizeof(uint32_t)));
+  std::memset(hQueues, 0, kNranks * kQueueSize * sizeof(ncclGinProxyGfd_t));
+
+  DeviceBuffer<uint32_t> d_pis(kNranks);
+  DeviceBuffer<uint32_t> d_cis(kNranks);
+  DeviceBuffer<ncclGinProxyGfd_t> d_gfdIn(1);
+  DeviceBuffer<ncclGinProxyGpuCtx_t> d_ctx(1);
+  d_pis.zero();
+  d_cis.zero();
+
+  ncclGinProxyGpuCtx_t hostCtx{};
+  hostCtx.nranks = static_cast<int>(kNranks);
+  hostCtx.queueSize = kQueueSize;
+  hostCtx.queues = hQueues;
+  hostCtx.pis = d_pis.ptr;
+  hostCtx.cis = d_cis.ptr;
+  d_ctx.upload(hostCtx);
+
+  uint32_t missed = 0;
+  for (uint32_t round = 0; round < kRounds; round++) {
+    // Same invariant buildGfd establishes: every qword carries flag bit 1, so "visible" == "flag bit observed set".
+    // The slot starts zeroed, so a set flag can only come from this round's stores.
+    ncclGinProxyGfd_t gfd{};
+    for (int k = 0; k < ncclGinProxyGfdQwords; k++) gfd.qword[k].raw = (uint64_t{0xC0FFEE00u + round} << 8) | 1u;
+    d_gfdIn.upload(gfd);
+    __atomic_store_n(hAck, 0u, __ATOMIC_RELEASE);
+
+    hipStream_t stream;
+    HIP_CHECK(hipStreamCreate(&stream));
+    kernelPostGfdThenWaitForHostAck<<<1, 64, 0, stream>>>(d_ctx.ptr, d_gfdIn.ptr, kPeer, hAck);
+
+    // Host-side "proxy": wait until every qword of this round's slot has its flag bit visible.
+    ncclGinProxyGfd_t* slot = &hQueues[kPeer * kQueueSize + round];
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(kHostTimeoutMs);
+    bool seen = false;
+    while (!seen && std::chrono::steady_clock::now() < deadline) {
+      seen = true;
+      for (int k = 0; k < ncclGinProxyGfdQwords; k++) {
+        const uint64_t raw = __atomic_load_n(&slot->qword[k].raw, __ATOMIC_RELAXED);
+        if ((raw & 1u) == 0) seen = false; // flag.v is the low bit of every qword.
+      }
+    }
+    if (!seen) missed++;
+
+    // Release the kernel either way; on a miss the GFD only becomes visible once it exits.
+    __atomic_store_n(hAck, 1u, __ATOMIC_RELEASE);
+    HIP_CHECK(hipStreamSynchronize(stream));
+    HIP_CHECK(hipStreamDestroy(stream));
+  }
+
+  EXPECT_EQ(missed, 0u) << missed << " of " << kRounds
+                        << " GFDs were not CPU-visible while the posting kernel was still running";
+
+  HIP_CHECK(hipHostFree(hQueues));
+  HIP_CHECK(hipHostFree(hAck));
 }
 
 // ---------------------------------------------------------------------------
