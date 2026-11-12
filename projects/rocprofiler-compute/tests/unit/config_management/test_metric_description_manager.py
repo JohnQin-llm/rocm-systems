@@ -10,6 +10,7 @@ import yaml
 from config_management import metric_description_manager
 
 import config
+from utils.utils_common import panel_config_paths
 
 MEMORY_PANEL = """\
 Panel Config:
@@ -122,7 +123,7 @@ def test_navi48_doc_generation_preserves_sections_and_units(memory_arch_dir, tmp
 def test_navi48_doc_mapping_covers_shipped_tables():
     arch_dir = config.analysis_configs_dir / "gfx1201"
     table_ids = set()
-    for path in arch_dir.glob("*.yaml"):
+    for path in panel_config_paths(arch_dir):
         panel = yaml.safe_load(path.read_text(encoding="utf-8"))["Panel Config"]
         for source in panel["data source"]:
             if "metric_table" in source:
