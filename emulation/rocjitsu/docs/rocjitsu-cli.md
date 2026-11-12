@@ -139,6 +139,9 @@ rocjitsu --profile mi350x --env HIP_VISIBLE_DEVICES=0 --workdir /tmp/run -- ./ap
 # Debug through ROCgdb; this implicitly starts a daemon unless --attach is used
 rocjitsu --profile mi350x --gdb-ex 'break add_one' --gdb-ex run -- ./app
 
+# Propagate the app's exit status from a scripted ROCgdb run
+rocjitsu --profile mi350x --gdb-ex run --gdb-ex 'quit $_exitcode' -- ./app
+
 # Daemon mode: fork daemon + launch app
 rocjitsu --daemon --config configs/gfx950_mi350x_kmd.json -- ./app args...
 
@@ -163,6 +166,10 @@ rocjitsu --config tests/fixtures/fabric_node_projection.json --node tray7 \
 
 See [QEMU VFIO-user compute](qemu-vfio.md) for the supported guest contract and
 launcher.
+
+Batch debugger launches return ROCgdb's exit status by default. Use
+`--gdb-ex 'quit $_exitcode'` after `--gdb-ex run` when a script should receive
+the debuggee's exit status instead.
 
 Environment variables that configure the simulator daemon itself must be set on
 the `rocjitsu` process, not only with `--env`, when `--gdb` or `--gdb-ex`

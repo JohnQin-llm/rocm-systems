@@ -126,34 +126,34 @@ TEST(LaunchPreloadTest, EnvpCacheRebuildsAfterSet) {
 TEST(LaunchPreloadTest, CanStartWithoutParentEnvironment) {
   const std::string name = "RJ_LAUNCH_ENV_CLEAR_TEST_" + std::to_string(getpid());
   ScopedEnvironmentVariable variable(name, "parent");
-  ASSERT_EQ(0, variable.set_result());
+  ASSERT_EQ(variable.set_result(), 0);
 
-  rocjitsu::cli::LaunchEnvironment inherited;
-  EXPECT_STREQ("parent", inherited.get(name));
+  rocjitsu::launcher::LaunchEnvironment inherited;
+  EXPECT_STREQ(inherited.get(name), "parent");
 
-  rocjitsu::cli::LaunchEnvironment clean(rocjitsu::cli::ParentEnvironment::Omit);
-  EXPECT_EQ(nullptr, clean.get(name));
+  rocjitsu::launcher::LaunchEnvironment clean(rocjitsu::launcher::ParentEnvironment::Omit);
+  EXPECT_EQ(clean.get(name), nullptr);
 
   clean.set(name, "child");
-  EXPECT_STREQ("child", clean.get(name));
+  EXPECT_STREQ(clean.get(name), "child");
 }
 
 TEST(LaunchPreloadTest, FailedExecRestoresOriginalEnvironment) {
   const std::string name = "RJ_LAUNCH_ENV_EXEC_RESTORE_TEST_" + std::to_string(getpid());
   ScopedEnvironmentVariable variable(name, "parent");
-  ASSERT_EQ(0, variable.set_result());
+  ASSERT_EQ(variable.set_result(), 0);
 
   {
-    rocjitsu::cli::LaunchEnvironment environment(rocjitsu::cli::ParentEnvironment::Omit);
+    rocjitsu::launcher::LaunchEnvironment environment(rocjitsu::launcher::ParentEnvironment::Omit);
     environment.set(name, "child");
     char executable[] = "/definitely-not-a-rocjitsu-test-executable";
     char *argv[] = {executable, nullptr};
 
-    EXPECT_EQ(-1, rocjitsu::cli::execvp_with_environment(executable, argv, environment));
+    EXPECT_EQ(rocjitsu::launcher::execvp_with_environment(executable, argv, environment), -1);
   }
 
-  ASSERT_NE(nullptr, std::getenv(name.c_str()));
-  EXPECT_STREQ("parent", std::getenv(name.c_str()));
+  ASSERT_NE(std::getenv(name.c_str()), nullptr);
+  EXPECT_STREQ(std::getenv(name.c_str()), "parent");
 }
 
 TEST(LaunchPreloadTest, DbtGuestToolsDisableAutomaticHotswapLoading) {
