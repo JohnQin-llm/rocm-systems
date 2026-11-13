@@ -97,3 +97,23 @@ variants include the store policy, WB (69-89%) is not better than V4 (75-90%).
 The DRAM-bytes baseline is taken from each emulation's own traces, and WB's
 write-back memory-side cache changes them; against V4's (72.7%) WB still clears
 it.
+
+## Results (MI355X, held-out set 4 of PREREG-addendum-4)
+
+R8 is the write-back model with the second calibration stage (`rank_fit.py`);
+P7 is the same traces with the corpus-only knobs of addendum 3. Model alone.
+
+| | R8 accuracy | P7 accuracy | R8 - P7 (paired) | best non-timing baseline | R8 median regret | comparison |
+|---|---|---|---|---|---|---|
+| hipBLASLt, 8 shapes, 119 solutions | 89.0% [86.4, 91.7] | 81.9% | +7.1 [+4.7, +9.7] | DRAM bytes 68.3% | 4.0% | hipBLASLt Default 27.9%, P7 8.1% |
+| Triton, 6 shapes, 64 configs | 74.1% [69.1, 78.7] | 73.2% | +0.9 [-1.7, +3.5] | instructions 60.3% | 7.3% | instructions 102.9% |
+
+All three criteria hold for hipBLASLt. For Triton, accuracy and regret hold and
+the paired gain over P7 does not.
+
+In the scored run, 20 Triton configs (one softmax group whole) had no clean
+hardware measurement. Two of the operator's own measurement processes
+overlapped on the same GPUs after a relaunch, and the guard rejected every
+attempt. Re-measured afterwards and scored as a labelled supplement, with the
+predictions unchanged: all 84 configs, R8 78.7% [74.9, 82.3] against P7 77.2%,
+paired +1.6 [-0.7, +3.8], median regret 3.3%. The conclusion is the same.

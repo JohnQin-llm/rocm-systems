@@ -129,6 +129,10 @@ def enumerate_cmd(args):
             guard = [sys.executable, str(TOOLS / "gpu_guard.py"), "run", "--hip",
                      str(args.hip), "--record", str(work / f"tune_{shape}.guard.json"), "--"]
             for _ in range(5):
+                # A results file left by an earlier attempt would be loaded instead of
+                # tuned, and its log would list no timed candidates.
+                for stale in work.glob(f"tune_{shape}*.csv"):
+                    stale.unlink()
                 with open(log, "w") as fh:
                     subprocess.run(guard + [sys.executable, "-c", code], env=env, stdout=fh,
                                    stderr=subprocess.STDOUT, check=False)
