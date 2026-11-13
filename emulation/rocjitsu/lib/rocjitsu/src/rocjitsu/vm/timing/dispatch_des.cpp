@@ -172,6 +172,7 @@ void DispatchDes::begin(const DispatchShape &shape) {
   ledger_.reset();
   acquired_.store(false, std::memory_order_relaxed);
   cycles_ = 0;
+  flush_bytes_ = 0;
   waves_ = 0;
   instructions_ = 0;
   stall_cycles_ = 0;
@@ -400,7 +401,20 @@ void DispatchDes::end() {
               shape_.workgroup_count, std::max<std::uint64_t>(1, tuning_.compute_units))),
           tuning_.workgroups_per_cycle)));
 
-  std::uint64_t body = throughput + latency_bound + filling;
+  // The release that ends a kernel writes back every line a write-back cache
+  // still holds dirty, and it can only start once the last wavefront is done,
+  // so it is serial after the work rather than another candidate for the
+  // throughput bound. Where a store's line goes dirty and how long it stays
+  // that way is what separates a kernel that streams its output from one that
+  // leaves it all for the end: on MI355X the same softmax moves the same bytes
+  // either way and differs by a tenth in time. The lines drain over the fabric
+  // into the memory-side cache, so they go at the slower of those two rates.
+  const double drain_rate =
+      std::max(std::min(tuning_.fabric_bytes_per_cycle, tuning_.mall_bytes_per_cycle), 1e-9);
+  const std::uint64_t flush = static_cast<std::uint64_t>(
+      tuning_.flush_exposure_scale * std::ceil(static_cast<double>(flush_bytes_) / drain_rate));
+
+  std::uint64_t body = throughput + latency_bound + filling + flush;
   if (latency_bound > throughput)
     bound_by_ = "latency";
   if (waves_ == 0) {
@@ -433,6 +447,7 @@ void DispatchDes::end() {
   // to be able to tell the modelled work from the correction applied to it.
   terms_.latency = latency_bound - std::min(latency_bound, terms_.straggler);
   terms_.filling = filling;
+  terms_.flush = flush;
   terms_.fixed = tuning_.dispatch_start_cycles + tuning_.launch_invalidate_cycles +
                  tuning_.dispatch_end_cycles;
   cycles_ = terms_.fixed + body;

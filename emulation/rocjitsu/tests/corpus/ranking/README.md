@@ -12,8 +12,9 @@ Scores are pairwise ordering accuracy on pairs hardware separates, and the
 regret of the predicted-best pick, against baselines that need no timing model
 (executed instructions, DRAM bytes, hipBLASLt's own `Default`, random). The
 evaluation protocol and its success criteria were fixed before the data in
-[PREREG.md](PREREG.md), [PREREG-addendum-1.md](PREREG-addendum-1.md) and
-[PREREG-addendum-2.md](PREREG-addendum-2.md).
+[PREREG.md](PREREG.md) and addenda [1](PREREG-addendum-1.md),
+[2](PREREG-addendum-2.md), [3](PREREG-addendum-3.md), [4](PREREG-addendum-4.md),
+[5](PREREG-addendum-5.md) and [6](PREREG-addendum-6.md).
 
 Measurements are written under `$RANKING_WORK` (default: the current
 directory), never into the tree. `ROCJITSU_BIN` names the emulator
@@ -78,3 +79,89 @@ chosen on the earlier sets only (hipBLASLt 0.9, Triton 0.7).
 The combined predictor meets both criteria for both libraries. The model alone
 meets the accuracy criterion for hipBLASLt (not the regret one) and the regret
 criterion for Triton (its accuracy CI lower bound, 66.9%, misses 67.2%).
+
+## Results (MI355X, held-out set 3 of PREREG-addendum-3)
+
+WB is the model with write-back caches and the release flush; V4 is the model
+before it, scored on the same items. Both are the model alone.
+
+| | WB accuracy | V4 accuracy | WB - V4 (paired) | best non-timing baseline | WB median regret | comparison |
+|---|---|---|---|---|---|---|
+| hipBLASLt, 8 shapes, 117 solutions | 83.4% [80.4, 86.2] | 80.5% | +2.9% [+0.3, +5.5] | DRAM bytes 65.9% | 17.8% | hipBLASLt Default 15.5% |
+| Triton, 6 shapes, 84 configs | 80.0% [76.3, 83.8] | 67.5% | +12.5% [+7.9, +17.2] | instructions 60.6% | 5.5% | instructions 67.9% |
+
+The accuracy criterion and the paired gain over V4 hold for both libraries;
+the regret criterion holds for Triton and not for hipBLASLt, where WB's picks
+(17.8%) are worse than Default's (15.5%) and than V4's (7.6%). The Triton gain
+comes from matmul (81-84% against V4's 46-60%); on the softmax groups, whose
+variants include the store policy, WB (69-89%) is not better than V4 (75-90%).
+The DRAM-bytes baseline is taken from each emulation's own traces, and WB's
+write-back memory-side cache changes them; against V4's (72.7%) WB still clears
+it.
+
+## Results (MI355X, held-out set 4 of PREREG-addendum-4)
+
+R8 is the write-back model with the second calibration stage (`rank_fit.py`);
+P7 is the same traces with the corpus-only knobs of addendum 3. Model alone.
+
+| | R8 accuracy | P7 accuracy | R8 - P7 (paired) | best non-timing baseline | R8 median regret | comparison |
+|---|---|---|---|---|---|---|
+| hipBLASLt, 8 shapes, 119 solutions | 89.0% [86.4, 91.7] | 81.9% | +7.1 [+4.7, +9.7] | DRAM bytes 68.3% | 4.0% | hipBLASLt Default 27.9%, P7 8.1% |
+| Triton, 6 shapes, 64 configs | 74.1% [69.1, 78.7] | 73.2% | +0.9 [-1.7, +3.5] | instructions 60.3% | 7.3% | instructions 102.9% |
+
+All three criteria hold for hipBLASLt. For Triton, accuracy and regret hold and
+the paired gain over P7 does not.
+
+In the scored run, 20 Triton configs (one softmax group whole) had no clean
+hardware measurement. Two of the operator's own measurement processes
+overlapped on the same GPUs after a relaunch, and the guard rejected every
+attempt. Re-measured afterwards and scored as a labelled supplement, with the
+predictions unchanged: all 84 configs, R8 78.7% [74.9, 82.3] against P7 77.2%,
+paired +1.6 [-0.7, +3.8], median regret 3.3%. The conclusion is the same.
+
+## Results (MI355X, held-out set 5 of PREREG-addendum-5)
+
+R9 recalibrates the release-flush scale on a 13-size copy sweep instead of 3
+sizes; R8b is the same pipeline with the 3-size scale. Both use the second
+calibration stage on the same development groups. Model alone.
+
+| | R9 accuracy | R8b accuracy | R9 - R8b (paired) | best non-timing baseline | R9 median regret | comparison |
+|---|---|---|---|---|---|---|
+| hipBLASLt, 8 shapes, 117 solutions | 87.4% [84.7, 90.1] | 87.2% | +0.2 [-0.4, +0.9] | instructions 64.0% | 14.2% | hipBLASLt Default 11.2% |
+| Triton, 8 shapes, 104 configs | 79.4% [75.7, 82.9] | 79.8% | -0.4 [-1.9, +1.0] | instructions 58.8% | 6.1% | instructions 57.4% |
+| of which the 6 store-policy softmaxes | 90.0% [86.6, 93.1] | 89.0% | +1.0 [-0.7, +2.8] | | 3.7% | |
+
+H1 holds for both libraries. H2 holds for Triton but not hipBLASLt: on this
+set R9 and R8b both pick at 14.2% median regret against Default's 11.2%.
+H4 (non-inferiority for hipBLASLt) holds. H3, the target of the recalibration
+(the softmax gain), does not: +1.0 point, CI spanning 0.
+
+A single flush scale, however calibrated, does not capture the regime-dependent
+store-policy cost. The H3 line was computed after the scoring script's
+softmax group list came out empty (a quoting bug). Its definition and the data
+were unchanged.
+
+## Results (MI355X, held-out set 6 of PREREG-addendum-6, hipBLASLt only)
+
+R10 is the second stage with the listwise term (weight 8), and its pick defers
+to Default unless it is predicted more than 3% faster. R8c is the pairs-only
+second stage with a plain pick. 12 shapes, 179 solutions.
+
+| | pairwise accuracy | pick regret median | mean | worst | <= Default |
+|---|---|---|---|---|---|
+| R10, plain pick | 90.1% [88.0, 91.9] | 0.8% | 13.6% | 82.5% | 9/11 |
+| R10, deferring pick | | 2.9% | 16.2% | 82.5% | 9/11 |
+| R8c, plain pick | 89.2% | 0.8% | 8.0% | 39.9% | 9/11 |
+| hipBLASLt Default | | 12.4% | 12.6% | 30.6% | |
+
+The accuracy criterion holds. Both regret tests fail:
+
+- R10's deferring pick minus Default: +3.5 [-9.9, +20.8].
+- R10's deferring pick minus R8c: +7.4 [+0.0, +20.9].
+
+R10 and R8c pick the same kernel on 10 of 12 shapes; two shapes make up the difference:
+
+- On m16_n3072_k6144, R10 picks a kernel 82.5% off the best, with a predicted 27.7% advantage over Default. That kernel is an LDS-bypassing tile (LDSB0). The listwise fits put the LDS weight at 0.50-0.75 in three of five seeds, against at most 0.04 for the pairs-only fits.
+- On m36_n6656_k1536, R10's pick is the true best, but its predicted 2.1% advantage sends it back to Default (14.1%).
+
+The listwise term overfits a feature of the development winners, which cross-validation by group did not catch. The pairs-only recipe stays.

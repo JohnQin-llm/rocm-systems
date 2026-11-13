@@ -244,6 +244,9 @@ bool fill_memory(const Instruction &inst, const amdgpu::Wavefront &wf, Collected
   const auto *vector = inst.data_as<amdgpu::VectorMemState>();
   retired.is_load = vector->is_load;
   retired.non_temporal = vector->non_temporal;
+  // System scope: the store has to reach memory, so a write-back cache may not
+  // keep it. The decoder folds the scope bits into the memory type.
+  retired.write_through = !vector->is_load && vector->mtype == amdgpu::Mtype::UC;
   retired.wait_counter = wait_counter_for(vector->wait_counter_type);
   // A decoder that left the width unset gets four bytes, the same assumption
   // the compute unit's own bounds check makes for the same fields.

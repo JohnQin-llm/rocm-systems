@@ -435,6 +435,15 @@ def recompose(dispatch: dict[str, Any], tuning: dict[str, float]) -> float:
         latency += per_barrier * per_wave
 
     body = throughput + latency + dispatch["filling"] * tuning.get("filling_scale", 1.0)
+    # The release flush is serial after the work (DispatchDes::end()) and drains
+    # over the fabric into the memory-side cache, at the slower of the two: their
+    # rate knobs apply to it as they do to the bandwidth term.  Traces from before
+    # it was modelled have no such term.
+    drain = tuning.get("bandwidth_scale", 1.0) * min(
+        tuning.get("level.fabric", 1.0), tuning.get("level.mall", 1.0)
+    )
+    # Moving bytes is work like the bandwidth term's, so the same work scale.
+    body += dispatch.get("flush", 0) / drain * work * tuning.get("flush_scale", 1.0)
     return fixed + body
 
 

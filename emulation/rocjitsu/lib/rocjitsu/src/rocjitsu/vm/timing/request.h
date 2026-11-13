@@ -30,6 +30,10 @@ struct RequestOrigin {
   std::uint32_t sequence = 0;
 };
 
+/// @brief The sequence a write-back carries. A cache sends one when it evicts
+///        a dirty line, on its own account; no wavefront waits for it.
+inline constexpr std::uint32_t kWriteBackSequence = 0xFFFFFFFFu;
+
 /// @brief One memory instruction's traffic, as it moves down the hierarchy.
 struct MemoryRequest {
   RequestOrigin origin;
@@ -41,6 +45,9 @@ struct MemoryRequest {
   std::uint32_t line_bytes = 64;
   bool is_load = true;
   bool non_temporal = false;
+  /// @brief A store that must reach memory before it completes (system scope),
+  ///        so no cache level may keep it as a dirty line.
+  bool write_through = false;
   bool instruction_fetch = false;
   /// @brief Which first-level cache serves this request. The plane routes on
   ///        it: a scalar access probes the scalar cache, whose geometry and

@@ -38,6 +38,11 @@ struct CacheTuning {
   std::uint64_t hit_cycles = 10000;
   /// @brief Lines this level returns per cycle, per instance.
   double lines_per_cycle = 1.0;
+  /// @brief A store allocates here dirty, unread, and reaches memory only when
+  ///        the line is evicted or a release flushes it.
+  bool write_back = false;
+  /// @brief A store passes through without probing or allocating.
+  bool write_through = false;
 };
 
 /// @brief Which matrix-core rate an opcode's inputs select.
@@ -201,6 +206,10 @@ struct Tuning {
   double latency_exposure_scale = 1.0;
   double fill_exposure_scale = 1.0;
   double fill_ramp_scale = 1.0;
+  /// @brief How much of the release flush at a dispatch's end is exposed: the
+  ///        dirty lines a write-back cache still holds when the last wavefront
+  ///        finishes, written back at the memory's rate after it.
+  double flush_exposure_scale = 1.0;
 
   CacheTuning l1_vector;
   CacheTuning l1_scalar;
