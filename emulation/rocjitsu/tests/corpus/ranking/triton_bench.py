@@ -69,19 +69,47 @@ def softmax_kernel(out_ptr, in_ptr, n_rows, n_cols, stride, ROWS: tl.constexpr, 
             tl.store(out_ptr + row * stride + cols, y.to(out_ptr.dtype.element_ty), mask=cols < n_cols)
 
 
+# The same kernel with the output store's cache policy as a variable (PREREG-addendum-3.md).
+# A separate kernel, so the variants measured before keep their compiled code.
+@triton.jit
+def softmax_store_kernel(out_ptr, in_ptr, n_rows, n_cols, stride, ROWS: tl.constexpr, BLOCK: tl.constexpr,
+                         STORE: tl.constexpr):
+    pid = tl.program_id(0)
+    cols = tl.arange(0, BLOCK)
+    for r in range(ROWS):
+        row = pid * ROWS + r
+        if row < n_rows:
+            x = tl.load(in_ptr + row * stride + cols, mask=cols < n_cols, other=-float("inf")).to(tl.float32)
+            x = x - tl.max(x, axis=0)
+            e = tl.exp(x)
+            y = e / tl.sum(e, axis=0)
+            tl.store(out_ptr + row * stride + cols, y.to(out_ptr.dtype.element_ty), mask=cols < n_cols,
+                     cache_modifier=STORE)
+
+
+STORE_POLICIES = ("", ".cs", ".wt")   # variant field c0, c1, c2
+
+
 MATMUL_SHAPES = {"mm512": (512, 512, 512), "mm1024": (1024, 1024, 1024),
                  "mm64x4096x1024": (64, 4096, 1024), "mm2048x512x1024": (2048, 512, 1024),
                  # Held-out (PREREG-addendum-1.md)
                  "mm768": (768, 768, 768), "mm128x2048x2048": (128, 2048, 2048),
                  # Held-out set 2 (PREREG-addendum-2.md)
-                 "mm256x3072x1024": (256, 3072, 1024), "mm1536x640x512": (1536, 640, 512)}
+                 "mm256x3072x1024": (256, 3072, 1024), "mm1536x640x512": (1536, 640, 512),
+                 # Held-out set 3 (PREREG-addendum-3.md)
+                 "mm384x1536x1536": (384, 1536, 1536), "mm1024x384x2048": (1024, 384, 2048),
+                 "mm192x4096x512": (192, 4096, 512)}
 SOFTMAX_SHAPES = {"sm4096x1024": (4096, 1024), "sm1024x4096": (1024, 4096), "sm8192x512": (8192, 512),
                   # Held-out (PREREG-addendum-1.md)
                   "sm2048x2048": (2048, 2048), "sm16384x256": (16384, 256),
                   # Held-out set 2 (PREREG-addendum-2.md)
-                  "sm4096x512": (4096, 512), "sm1024x3072": (1024, 3072)}
+                  "sm4096x512": (4096, 512), "sm1024x3072": (1024, 3072),
+                  # Held-out set 3 (PREREG-addendum-3.md); variants also choose the store policy
+                  "sm3072x768": (3072, 768), "sm6144x1280": (6144, 1280), "sm1536x2560": (1536, 2560)}
 HELDOUT_TRITON = ["mm768", "mm128x2048x2048", "sm2048x2048", "sm16384x256"]
 HELDOUT2_TRITON = ["mm256x3072x1024", "mm1536x640x512", "sm4096x512", "sm1024x3072"]
+HELDOUT3_TRITON = ["mm384x1536x1536", "mm1024x384x2048", "mm192x4096x512", "sm3072x768", "sm6144x1280",
+                   "sm1536x2560"]
 
 
 def cases():
@@ -91,9 +119,13 @@ def cases():
         rng = random.Random(f"triton-{name}")
         out[name] = [f"m{bm}_n{bn}_k{bk}_w{w}_s{s}" for bm, bn, bk, w, s in rng.sample(grid, 16)]
     sgrid = list(itertools.product((1, 2, 4, 8, 16), (1, 2, 4, 8)))
+    cgrid = list(itertools.product((1, 2, 4, 8, 16), (1, 2, 4, 8), range(len(STORE_POLICIES))))
     for name in SOFTMAX_SHAPES:
         rng = random.Random(f"triton-{name}")
-        out[name] = [f"w{w}_r{r}" for w, r in rng.sample(sgrid, 12)]
+        if name in HELDOUT3_TRITON:
+            out[name] = [f"w{w}_r{r}_c{c}" for w, r, c in rng.sample(cgrid, 12)]
+        else:
+            out[name] = [f"w{w}_r{r}" for w, r in rng.sample(sgrid, 12)]
     return out
 
 
@@ -126,6 +158,9 @@ def build(case, variant):
     grid = (triton.cdiv(rows, v["r"]),)
 
     def fn():
+        if "c" in v:
+            return softmax_store_kernel[grid](y, x, rows, cols, x.stride(0), ROWS=v["r"], BLOCK=block,
+                                              STORE=STORE_POLICIES[v["c"]], num_warps=v["w"])
         return softmax_kernel[grid](y, x, rows, cols, x.stride(0), ROWS=v["r"], BLOCK=block, num_warps=v["w"])
 
     def err():
