@@ -7,6 +7,7 @@
 #include "rocjitsu/vm/timing/engine.h"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <utility>
 
@@ -51,7 +52,12 @@ bool TagArray::access(std::uint64_t byte_address, std::uint64_t stamp) {
   if (ways_ == 0 || tags_.empty())
     return false;
   const std::uint64_t line = byte_address >> line_shift_;
-  const std::size_t base = static_cast<std::size_t>((line & set_mask_) * ways_);
+  // Hashed set index: hardware folds upper address bits into the index so a
+  // power-of-two stride does not pile onto a few sets.
+  const std::uint64_t index_bits = static_cast<std::uint64_t>(std::countr_zero(sets_));
+  const std::uint64_t hashed =
+      index_bits == 0 ? 0 : (line ^ (line >> index_bits) ^ (line >> (2 * index_bits))) & set_mask_;
+  const std::size_t base = static_cast<std::size_t>(hashed * ways_);
   std::size_t victim = base;
   std::uint64_t oldest = ~0ULL;
   for (std::uint64_t way = 0; way < ways_; ++way) {

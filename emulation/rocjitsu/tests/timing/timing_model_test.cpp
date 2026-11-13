@@ -282,11 +282,11 @@ TEST(TimingCache, RepeatedAccessHitsAndCapacityEvicts) {
   tags.configure(2, 2, 64);
   EXPECT_FALSE(tags.access(0x0000, 1)) << "cold";
   EXPECT_TRUE(tags.access(0x0000, 2)) << "warm";
-  // Four distinct lines into the same two-way set: the first is gone.
-  tags.access(0x0080, 3);
-  tags.access(0x0100, 4);
-  tags.access(0x0180, 5);
-  EXPECT_FALSE(tags.access(0x0000, 6));
+  // Far more distinct lines than the array holds: the first is gone, whatever
+  // set the index function puts each line in.
+  for (std::uint64_t line = 1; line <= 16; ++line)
+    tags.access(line * 64, 2 + line);
+  EXPECT_FALSE(tags.access(0x0000, 100));
 }
 
 TEST(TimingCache, InvalidateLosesEverything) {
@@ -357,11 +357,12 @@ TEST(TimingDispatch, MoreWorkgroupsNeverCostLess) {
 TEST(TimingDispatch, DivergentAccessCostsMoreThanCoalesced) {
   // The single relation the whole memory side exists to produce, and the one
   // that no static analysis of the source could recover.
-  TimingPlane plane{Tuning::parse(tiny_config())};
-  DispatchShape shape = shape_for(4, 1);
-  const std::uint64_t together = run_dispatch(plane, shape, 8, contiguous_lanes(0x100000));
-  shape.dispatch_id = 2;
-  const std::uint64_t apart = run_dispatch(plane, shape, 8, divergent_lanes(0x200000));
+  // A fresh plane each, so neither run finds the other's code or lines warm.
+  TimingPlane coalesced{Tuning::parse(tiny_config())};
+  TimingPlane divergent{Tuning::parse(tiny_config())};
+  const std::uint64_t together =
+      run_dispatch(coalesced, shape_for(4, 1), 8, contiguous_lanes(0x100000));
+  const std::uint64_t apart = run_dispatch(divergent, shape_for(4, 1), 8, divergent_lanes(0x200000));
   EXPECT_GT(apart, together);
 }
 
