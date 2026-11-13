@@ -15,6 +15,7 @@ counterpart across the picks of a group (Spearman).
 import csv
 import glob
 import json
+import os
 import statistics
 import subprocess
 import sys
@@ -124,7 +125,6 @@ def reparse():
 
 
 def emu_traffic(kind, g, v):
-    import os
     sfx = os.environ.get("EMU_SUFFIX", "")
     base = WORK / (("emu" if kind == "gemm" else "triton_emu") + sfx) / f"{g}__{v}"
     if not Path(str(base) + ".trace.jsonl").exists():
