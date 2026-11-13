@@ -456,6 +456,10 @@ void TimingPlane::forward_to_channels(const MemoryRequest &request) {
     if (channel_scratch_[channel] == 0)
       continue;
     MemoryRequest part = request;
+    // Past the GPU's own caches a system-scope store is ordinary memory traffic:
+    // the memory-side cache is part of memory, and on MI355X every store policy
+    // reaches it the same way.
+    part.write_through = false;
     part.line_bytes = static_cast<std::uint32_t>(stride);
     part.line_base = static_cast<std::uint32_t>(line_pool_.size());
     part.line_count = 0;

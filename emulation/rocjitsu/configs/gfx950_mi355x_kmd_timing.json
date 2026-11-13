@@ -141,6 +141,7 @@
       "mall.line_bytes": 64,
       "mall.sets": 262144,
       "mall.ways": 16,
+      "mall.write_back": true,
       "matrix_multiply.macs_per_cycle.bf16": 256,
       "matrix_multiply.macs_per_cycle.f16": 256,
       "matrix_multiply.macs_per_cycle.f32": 32,

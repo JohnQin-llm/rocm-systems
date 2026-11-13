@@ -37,6 +37,9 @@ from scipy.optimize import differential_evolution
 
 # name: (low, high, log-scaled?)  Multipliers act on the recorded,
 # uncalibrated terms, so their bounds are wide on purpose.
+# flush_scale is deliberately absent: the corpus does not identify it (its
+# loss is flat in it while level.fabric compensates), so it stays at the
+# physical 1.0 -- the release flush drains at the same rate as the fabric.
 KNOBS: dict[str, tuple[float, float, bool]] = {
     "fixed_scale": (1e-3, 10.0, True),
     "fixed_add": (0.0, 20000.0, False),
@@ -59,7 +62,6 @@ KNOBS: dict[str, tuple[float, float, bool]] = {
     "placement_scale": (1e-3, 10.0, True),
     "fill_scale": (1e-3, 10.0, True),
     "filling_scale": (1e-3, 10.0, True),
-    "flush_scale": (1e-3, 10.0, True),
     "straggler_scale": (1e-3, 10.0, True),
     "issue_occupancy_exponent": (-1.0, 1.0, False),
 }

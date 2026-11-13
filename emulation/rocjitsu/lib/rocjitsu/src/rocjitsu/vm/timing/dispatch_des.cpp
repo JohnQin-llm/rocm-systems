@@ -408,8 +408,9 @@ void DispatchDes::end() {
   // that way is what separates a kernel that streams its output from one that
   // leaves it all for the end: on MI355X the same softmax moves the same bytes
   // either way and differs by a tenth in time. The lines drain over the fabric
-  // to the memory-side cache, so they go at the fabric's rate, not DRAM's.
-  const double drain_rate = std::max(tuning_.fabric_bytes_per_cycle, 1e-9);
+  // into the memory-side cache, so they go at the slower of those two rates.
+  const double drain_rate =
+      std::max(std::min(tuning_.fabric_bytes_per_cycle, tuning_.mall_bytes_per_cycle), 1e-9);
   const std::uint64_t flush = static_cast<std::uint64_t>(
       tuning_.flush_exposure_scale * std::ceil(static_cast<double>(flush_bytes_) / drain_rate));
 
