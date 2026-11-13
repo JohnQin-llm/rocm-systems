@@ -258,7 +258,8 @@ bool touched_nothing(const RetiredInstruction &retired) {
 std::uint64_t submit(TimingPlane &plane, const std::vector<std::uint64_t> &lines,
                      std::uint64_t line_bytes, const RequestOrigin &origin,
                      std::uint64_t issued_tick, std::uint64_t period, bool is_load,
-                     bool non_temporal, bool instruction_fetch, MemorySpace space) {
+                     bool non_temporal, bool write_through, bool instruction_fetch,
+                     MemorySpace space) {
   MemoryRequest request;
   request.origin = origin;
   // The plane owns the line pool, so it is the one that knows where these lines
@@ -268,6 +269,7 @@ std::uint64_t submit(TimingPlane &plane, const std::vector<std::uint64_t> &lines
   request.line_bytes = static_cast<std::uint32_t>(line_bytes);
   request.is_load = is_load;
   request.non_temporal = non_temporal;
+  request.write_through = write_through;
   request.instruction_fetch = instruction_fetch;
   request.space = space;
   request.issued_tick = issued_tick;
@@ -345,7 +347,8 @@ AccessCost vector_access(const Tuning &tuning, TimingPlane &plane, std::uint32_t
   }
 
   cost.latency_cycles = submit(plane, lines, line_bytes, origin, issued_tick, period,
-                               retired.is_load, non_temporal, false, MemorySpace::Global);
+                               retired.is_load, non_temporal, retired.write_through, false,
+                               MemorySpace::Global);
   cost.issue_cycles = std::max(address_cycles, ceil_div_real(static_cast<double>(lines.size()),
                                                              tuning.l1_vector.lines_per_cycle));
   cost.outstanding_lines = outstanding_from(tuning, cost.latency_cycles, lines.size());
@@ -369,7 +372,8 @@ AccessCost scalar_access(const Tuning &tuning, TimingPlane &plane,
 
   AccessCost cost;
   cost.latency_cycles = submit(plane, lines, line_bytes, origin, issued_tick, period,
-                               retired.is_load, retired.non_temporal, false, MemorySpace::Scalar);
+                               retired.is_load, retired.non_temporal, false, false,
+                               MemorySpace::Scalar);
   // One operation on the scalar unit however many lines it spans: the scalar
   // path has no lanes to walk.
   cost.issue_cycles = 1;
@@ -417,7 +421,7 @@ std::uint64_t fetch_cycles(const Tuning &tuning, TimingPlane &plane, std::uint64
   std::vector<std::uint64_t> &lines = line_scratch();
   lines.push_back((program_counter >> shift) << shift);
   return submit(plane, lines, std::uint64_t{1} << shift, origin, issued_tick, period, true, false,
-                true, MemorySpace::Global);
+                false, true, MemorySpace::Global);
 }
 
 /// @brief Advance @p wave to @p completion, recording the wait as a stall.

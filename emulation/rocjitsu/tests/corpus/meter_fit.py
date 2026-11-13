@@ -59,6 +59,7 @@ KNOBS: dict[str, tuple[float, float, bool]] = {
     "placement_scale": (1e-3, 10.0, True),
     "fill_scale": (1e-3, 10.0, True),
     "filling_scale": (1e-3, 10.0, True),
+    "flush_scale": (1e-3, 10.0, True),
     "straggler_scale": (1e-3, 10.0, True),
     "issue_occupancy_exponent": (-1.0, 1.0, False),
 }

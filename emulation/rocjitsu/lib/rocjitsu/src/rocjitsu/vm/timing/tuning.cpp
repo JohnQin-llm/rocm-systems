@@ -108,6 +108,17 @@ public:
     return parsed;
   }
 
+  /// @brief A structural switch. Off when absent, and absence is not a guess:
+  ///        a config that does not name one describes a part without it.
+  bool flag(std::string_view key) {
+    const std::string name(key);
+    const auto found = machine_.find(name);
+    if (found == machine_.end())
+      return false;
+    tuning_.resolved.push_back(name + " = " + found->second);
+    return found->second == "true" || found->second == "1";
+  }
+
   /// @brief Cycles to charge one instruction of @p cls on its issue port.
   ///
   /// @details A class the config does not name resolves to the largest issue
@@ -236,6 +247,7 @@ Tuning Tuning::parse(const std::string &config_json) {
   tuning.latency_exposure_scale = read.real("latency_exposure_scale", 1.0);
   tuning.fill_exposure_scale = read.real("fill_exposure_scale", 1.0);
   tuning.fill_ramp_scale = read.real("fill_ramp_scale", 1.0);
+  tuning.flush_exposure_scale = read.real("flush_exposure_scale", 1.0);
 
   const auto cache = [&read](const std::string &prefix) {
     CacheTuning out;
@@ -248,6 +260,8 @@ Tuning Tuning::parse(const std::string &config_json) {
     out.ways = read.integer(prefix + ".ways", 1);
     out.hit_cycles = read.integer(prefix + ".hit_cycles", kUnnamedLatencyCycles);
     out.lines_per_cycle = read.real(prefix + ".lines_per_cycle", 1.0);
+    out.write_back = read.flag(prefix + ".write_back");
+    out.write_through = read.flag(prefix + ".write_through");
     return out;
   };
   tuning.l1_vector = cache("l1_vector");

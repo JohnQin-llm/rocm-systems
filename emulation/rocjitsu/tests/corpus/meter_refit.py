@@ -435,6 +435,11 @@ def recompose(dispatch: dict[str, Any], tuning: dict[str, float]) -> float:
         latency += per_barrier * per_wave
 
     body = throughput + latency + dispatch["filling"] * tuning.get("filling_scale", 1.0)
+    # The release flush is serial after the work (DispatchDes::end()), and moves
+    # at the fabric's rate, so the fabric's rate knob applies to it as well.
+    # Traces from before it was modelled have no such term.
+    fabric_rate = tuning.get("bandwidth_scale", 1.0) * tuning.get("level.fabric", 1.0)
+    body += dispatch.get("flush", 0) / fabric_rate * tuning.get("flush_scale", 1.0)
     return fixed + body
 
 
