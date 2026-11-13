@@ -43,6 +43,12 @@ ap.add_argument("--primary", choices=("pred", "comb"), default="pred",
 ap.add_argument("--ref-emu", help="a second emulation of the same items, to compare against (PREREG-addendum-3.md)")
 ap.add_argument("--ref-fits", help="the reference's tunings (default: --fits)")
 ap.add_argument("--ref-name", default="reference")
+ap.add_argument("--defer", type=float,
+                help="also pick with the deferring rule: the primary predictor's pick only when it predicts it "
+                     "more than this fraction faster than Default, otherwise Default (PREREG-addendum-6.md)")
+ap.add_argument("--regret-tests", action="store_true",
+                help="paired bootstrap over groups of mean pick regret: the deferring (or primary) pick against "
+                     "Default and against the reference (PREREG-addendum-6.md)")
 ap.add_argument("--margin", type=float, default=0.0,
                 help="paired comparison passes when its CI lower bound exceeds this (e.g. -0.02: non-inferiority)")
 args = ap.parse_args()
@@ -239,19 +245,47 @@ for grp in sorted({p[0] for p in pairs}):
     print(f"  {grp:22s} {len(ps):5d} " + " ".join(f"{statistics.fmean(p[n] for p in ps):6.0%}" for n in PRED))
 
 print("\nDECISION (regret = hardware time of the pick / best - 1)")
-reg = defaultdict(list)
+by_group = defaultdict(dict)     # predictor -> group -> regret
+DEFER = f"{PRIMARY.split(' (')[0]}, defer >{args.defer:.0%}" if args.defer is not None else None
 for grp in sorted({k[0] for k in rows}):
     keys = [k for k in rows if k[0] == grp]
     best = min(rows[k]["hw"] for k in keys)
     for n, f in PRED.items():
         ks = [k for k in keys if rows[k][f]]
-        reg[n].append(rows[min(ks, key=lambda k: rows[k][f])]["hw"] / best - 1)
-    if args.bench == "gemm" and (grp, "Default") in rows:
-        reg["hipBLASLt Default"].append(rows[(grp, "Default")]["hw"] / best - 1)
-    reg["random (expected)"].append(statistics.fmean(rows[k]["hw"] / best - 1 for k in keys))
+        by_group[n][grp] = rows[min(ks, key=lambda k: rows[k][f])]["hw"] / best - 1
+    dkey = (grp, "Default")
+    if args.bench == "gemm" and dkey in rows:
+        by_group["hipBLASLt Default"][grp] = rows[dkey]["hw"] / best - 1
+        if DEFER:
+            f = PRED[PRIMARY]
+            pick = min((k for k in keys if rows[k][f]), key=lambda k: rows[k][f])
+            choice = pick if rows[dkey][f] / rows[pick][f] > 1 + args.defer else dkey
+            by_group[DEFER][grp] = rows[choice]["hw"] / best - 1
+    by_group["random (expected)"][grp] = statistics.fmean(rows[k]["hw"] / best - 1 for k in keys)
+reg = {n: list(v.values()) for n, v in by_group.items()}
 for n, v in reg.items():
+    extra = ""
+    if "hipBLASLt Default" in by_group and n != "hipBLASLt Default":
+        common = [g for g in by_group[n] if g in by_group["hipBLASLt Default"]]
+        if common:
+            extra = (f"   <= Default in {sum(by_group[n][g] <= by_group['hipBLASLt Default'][g] + 1e-9 for g in common)}"
+                     f"/{len(common)}")
     print(f"  {n:28s} median {statistics.median(v):6.1%}   mean {statistics.fmean(v):6.1%}   "
-          f"worst {max(v):6.1%}   groups {len(v)}")
+          f"worst {max(v):6.1%}   groups {len(v)}{extra}")
+
+if args.regret_tests:
+    # Paired over groups: resample groups, mean of the per-group regret differences.
+    def paired(a, b):
+        gs = [g for g in by_group[a] if g in by_group[b]]
+        d = [by_group[a][g] - by_group[b][g] for g in gs]
+        boot = sorted(statistics.fmean(rng.choices(d, k=len(d))) for _ in range(4000))
+        return statistics.fmean(d), boot[100], boot[3899]
+    tested = DEFER or PRIMARY
+    print("\nREGRET TESTS (mean pick regret difference, paired bootstrap over groups; criterion: CI upper bound < 0)")
+    for other in ("hipBLASLt Default", f"REFERENCE ({args.ref_name})" if args.ref_emu else None):
+        if other and other in by_group:
+            m, lo, hi = paired(tested, other)
+            print(f"  {tested} minus {other}: {m:+.1%}  95% CI [{lo:+.1%}, {hi:+.1%}]: {'PASS' if hi < 0 else 'FAIL'}")
 
 if args.ref_emu:
     # Both predictors on the same stable pairs: the difference is paired.

@@ -53,6 +53,9 @@ SAMPLES = 3
 NOISE = math.log2(1.10)
 TAU = 0.05          # logistic temperature on log2 predicted ratios
 PULL = 0.02         # weight of the squared log10 distance from the corpus fit, per knob
+TAU_LIST = 0.1      # listwise term: temperature of the model's softmax over a group, on log2 time
+TAU_HW = 0.05       # and of the hardware's, which puts nearly all its weight on the fastest few
+DELTAS = (0.0, 0.03, 0.05, 0.10, 0.20)   # deferring-rule margins reported in cross-validation
 
 _S: dict = {}
 
@@ -153,7 +156,23 @@ def loss(x):
                     cache[k] = math.log2(p)
             margin = (cache[fast] - cache[slow]) / TAU
             total += math.log1p(math.exp(margin)) if margin < 30 else margin
-        per_group.append(total / len(_S["pairs"][g]))
+        total /= len(_S["pairs"][g])
+        if _S["lam"] > 0:
+            # Listwise: cross-entropy between the hardware's and the model's "which one is
+            # fastest" distributions over the whole group. Pairs weigh every ordering alike;
+            # this weighs getting the winner right.
+            keys, target = _S["targets"][g]
+            for k in keys:
+                if k not in cache:
+                    p = predict(_S["items"][k], tuning)
+                    if not p > 0:
+                        return 1e9
+                    cache[k] = math.log2(p)
+            z = [-cache[k] / TAU_LIST for k in keys]
+            top = max(z)
+            log_norm = top + math.log(sum(math.exp(v - top) for v in z))
+            total += _S["lam"] * -sum(w * (v - log_norm) for w, v in zip(target, z))
+        per_group.append(total)
     pull = sum((v - math.log10(_S["start"][n])) ** 2 for n, v in zip(_S["names"], x))
     return statistics.fmean(per_group) + PULL * pull
 
@@ -162,9 +181,23 @@ def init_worker(state):
     _S.update(state)
 
 
-def fit(start, train_groups, items, pairs, seed, workers, maxiter, popsize):
+def targets(items, groups):
+    """Per group: its items and the hardware's softmax over them on log2 time (TAU_HW)."""
+    out = {}
+    for g in groups:
+        keys = sorted(k for k in items if k[0] == g)
+        z = [-math.log2(items[k]["hw"]) / TAU_HW for k in keys]
+        top = max(z)
+        w = [math.exp(v - top) for v in z]
+        s = sum(w)
+        out[g] = (keys, [v / s for v in w])
+    return out
+
+
+def fit(start, train_groups, items, pairs, seed, workers, maxiter, popsize, lam=0.0):
     names = list(KNOBS)
-    state = dict(start=start, names=names, train_groups=train_groups, items=items, pairs=pairs)
+    state = dict(start=start, names=names, train_groups=train_groups, items=items, pairs=pairs, lam=lam,
+                 targets=targets(items, train_groups))
     _S.update(state)
     bounds = []
     for n in names:
@@ -186,12 +219,20 @@ def score(groups, items, pairs, tunings):
         for k in {k for p in pairs[g] for k in p} | {k for k in items if k[0] == g}:
             preds[k] = math.exp(statistics.fmean(math.log(predict(items[k], t)) for t in tunings))
     ok = [float(preds[f] < preds[s]) for g in groups for f, s in pairs[g]]
-    regrets = []
+    regrets, defaults, deferred = {}, {}, {}
     for g in groups:
         keys = [k for k in items if k[0] == g]
         best = min(items[k]["hw"] for k in keys)
-        regrets.append(items[min(keys, key=preds.get)]["hw"] / best - 1)
-    return statistics.fmean(ok), statistics.median(regrets), len(ok)
+        regrets[g] = items[min(keys, key=preds.get)]["hw"] / best - 1
+        if (g, "Default") in items:
+            defaults[g] = items[(g, "Default")]["hw"] / best - 1
+            # Deferring rule: take the model's pick only when it predicts it at least
+            # delta faster than the library's Default; otherwise keep Default.
+            pick = min(keys, key=preds.get)
+            for delta in DELTAS:
+                choice = pick if preds[(g, "Default")] / preds[pick] > 1 + delta else (g, "Default")
+                deferred.setdefault(delta, {})[g] = items[choice]["hw"] / best - 1
+    return statistics.fmean(ok), statistics.median(regrets.values()), len(ok), regrets, defaults, deferred
 
 
 def main():
@@ -203,6 +244,7 @@ def main():
     ap.add_argument("--workers", type=int, default=32)
     ap.add_argument("--maxiter", type=int, default=60)
     ap.add_argument("--popsize", type=int, default=10)
+    ap.add_argument("--listwise", type=float, default=0.0, help="weight of the listwise term (0: pairs only)")
     args = ap.parse_args()
 
     base = mr.config_defaults(mr.load_config(str(ROOT / "configs/gfx950_mi355x_kmd_timing.json")))
@@ -230,7 +272,7 @@ def main():
             fitted = []
             for k, (f, start) in enumerate(starts):
                 knobs, _, _ = fit(dict(start), train, items, pairs, seed=k + 1, workers=args.workers,
-                                  maxiter=args.maxiter, popsize=args.popsize)
+                                  maxiter=args.maxiter, popsize=args.popsize, lam=args.listwise)
                 t = dict(start)
                 t.update(knobs)
                 fitted.append(t)
@@ -250,15 +292,34 @@ def main():
             acc_a = sum(x[2][0] * x[2][2] for x in r) / n
             print(f"CV {lib:6s}: pairwise accuracy {acc_b:.1%} -> {acc_a:.1%}; median of fold median regrets "
                   f"{statistics.median(x[1][1] for x in r):.1%} -> {statistics.median(x[2][1] for x in r):.1%}")
+            # Pick regret pooled over every test group of every fold: one number per group.
+            for label, idx in (("corpus fit", 1), ("second stage", 2)):
+                reg = {g: v for x in r for g, v in x[idx][3].items()}
+                dflt = {g: v for x in r for g, v in x[idx][4].items()}
+                vals = list(reg.values())
+                line = (f"   {lib:6s} {label:12s} pick regret over {len(vals)} groups: median {statistics.median(vals):.1%}"
+                        f"  mean {statistics.fmean(vals):.1%}  <=5% in {sum(v <= 0.05 for v in vals) / len(vals):.0%}")
+                if dflt:
+                    line += (f"  | Default: median {statistics.median(dflt.values()):.1%} mean {statistics.fmean(dflt.values()):.1%}"
+                             f"  pick <= Default in {sum(reg[g] <= dflt[g] + 1e-9 for g in dflt) / len(dflt):.0%}")
+                print(line)
+                if dflt and label == "second stage":
+                    for delta in DELTAS:
+                        dv = {g: v for x in r for g, v in x[idx][5].get(delta, {}).items()}
+                        vals_d = list(dv.values())
+                        print(f"      defer to Default unless predicted >{delta:.0%} faster: median {statistics.median(vals_d):.1%}"
+                              f"  mean {statistics.fmean(vals_d):.1%}  <= Default in "
+                              f"{sum(dv[g] <= dflt[g] + 1e-9 for g in dv) / len(dv):.0%}  ({len(dv)} groups)")
         return
 
     for k, (f, start) in enumerate(starts, 1):
         knobs, fun, fun0 = fit(dict(start), groups, items, pairs, seed=k, workers=args.workers,
-                               maxiter=args.maxiter, popsize=args.popsize)
+                               maxiter=args.maxiter, popsize=args.popsize, lam=args.listwise)
         src = json.loads(Path(f).read_text())
         src["knobs"].update(knobs)
         src["rank_fit"] = {"from": os.path.basename(f), "loss": fun, "loss_at_start": fun0, "knobs": list(KNOBS),
-                           "dev": args.dev, "tau": TAU, "pull": PULL}
+                           "dev": args.dev, "tau": TAU, "pull": PULL,
+                           "listwise": args.listwise, "tau_list": TAU_LIST, "tau_hw": TAU_HW}
         out = WORK / f"{args.out_prefix}-s{k}.json"
         out.write_text(json.dumps(src, indent=1))
         print(f"{out.name}: loss {fun0:.4f} -> {fun:.4f}  " + " ".join(f"{n}={v:.3g}" for n, v in knobs.items()), flush=True)

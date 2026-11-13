@@ -13,8 +13,8 @@ regret of the predicted-best pick, against baselines that need no timing model
 (executed instructions, DRAM bytes, hipBLASLt's own `Default`, random). The
 evaluation protocol and its success criteria were fixed before the data in
 [PREREG.md](PREREG.md) and addenda [1](PREREG-addendum-1.md),
-[2](PREREG-addendum-2.md), [3](PREREG-addendum-3.md), [4](PREREG-addendum-4.md) and
-[5](PREREG-addendum-5.md).
+[2](PREREG-addendum-2.md), [3](PREREG-addendum-3.md), [4](PREREG-addendum-4.md),
+[5](PREREG-addendum-5.md) and [6](PREREG-addendum-6.md).
 
 Measurements are written under `$RANKING_WORK` (default: the current
 directory), never into the tree. `ROCJITSU_BIN` names the emulator
