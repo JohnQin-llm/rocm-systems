@@ -78,3 +78,22 @@ chosen on the earlier sets only (hipBLASLt 0.9, Triton 0.7).
 The combined predictor meets both criteria for both libraries. The model alone
 meets the accuracy criterion for hipBLASLt (not the regret one) and the regret
 criterion for Triton (its accuracy CI lower bound, 66.9%, misses 67.2%).
+
+## Results (MI355X, held-out set 3 of PREREG-addendum-3)
+
+WB is the model with write-back caches and the release flush; V4 is the model
+before it, scored on the same items. Both are the model alone.
+
+| | WB accuracy | V4 accuracy | WB - V4 (paired) | best non-timing baseline | WB median regret | comparison |
+|---|---|---|---|---|---|---|
+| hipBLASLt, 8 shapes, 117 solutions | 83.4% [80.4, 86.2] | 80.5% | +2.9% [+0.3, +5.5] | DRAM bytes 65.9% | 17.8% | hipBLASLt Default 15.5% |
+| Triton, 6 shapes, 84 configs | 80.0% [76.3, 83.8] | 67.5% | +12.5% [+7.9, +17.2] | instructions 60.6% | 5.5% | instructions 67.9% |
+
+The accuracy criterion and the paired gain over V4 hold for both libraries;
+the regret criterion holds for Triton and not for hipBLASLt, where WB's picks
+(17.8%) are worse than Default's (15.5%) and than V4's (7.6%). The Triton gain
+comes from matmul (81-84% against V4's 46-60%); on the softmax groups, whose
+variants include the store policy, WB (69-89%) is not better than V4 (75-90%).
+The DRAM-bytes baseline is taken from each emulation's own traces, and WB's
+write-back memory-side cache changes them; against V4's (72.7%) WB still clears
+it.
