@@ -3,6 +3,8 @@
 
   prereg_score.py gemm   --hw hw3         --emu emu
   prereg_score.py triton --hw triton_hw   --emu triton_emu
+  prereg_score.py gemm ... --fit-w --groups DEV...              (PREREG-addendum-2.md: choose w)
+  prereg_score.py gemm ... --combine-w W --primary comb --groups HELDOUT2...
 
 Predictor: per item, the geometric mean over the prereg-fit-s*.json tunings of
 the recomposed modelled cycles of the item's dispatches (bench_refit.py's
@@ -30,7 +32,16 @@ ap.add_argument("--noise-pct", type=float, default=10.0)
 ap.add_argument("--groups", nargs="*", help="score only these groups (shapes / cases)")
 ap.add_argument("--warm-only", action="store_true",
                 help="score only the timed (warm) calls, as hardware and the event bracket do")
+ap.add_argument("--combine-w", type=float,
+                help="also score pred^w * instructions^(1-w) (PREREG-addendum-2.md)")
+ap.add_argument("--fit-w", action="store_true",
+                help="print pairwise accuracy of the combined predictor over a w grid and the w the "
+                     "PREREG-addendum-2.md rule selects, then stop (development data only)")
+ap.add_argument("--primary", choices=("pred", "comb"), default="pred",
+                help="predictor the pre-registered criteria apply to")
 args = ap.parse_args()
+if args.primary == "comb" and args.combine_w is None:
+    ap.error("--primary comb needs --combine-w")
 SAMPLES = 3
 
 
@@ -121,10 +132,23 @@ for p in glob.glob(str(B / args.emu / "*__*.json")):
 print(f"{args.bench}: {len(rows)} items scored over {len({k[0] for k in rows})} groups; "
       f"{len(tunings)} tunings; hardware runs {len(hw)}; dropped {dict(dropped)}")
 
+def combined(r, w):
+    """PREREG-addendum-2.md: the model's prediction and the executed-instruction count, as a
+    weighted geometric mean; within a group only the ranking matters, so no scale is needed."""
+    if not r["insts"]:
+        return None
+    return math.exp(w * math.log(r["pred"]) + (1 - w) * math.log(r["insts"]))
+
+
 PRED = {"PREDICTOR (5-fit ensemble)": "pred", "uncalibrated model": "uncal",
         "fewer instructions": "insts", "fewer DRAM bytes": "dram"}
+if args.combine_w is not None:
+    PRED[f"COMBINED (w={args.combine_w:g})"] = "comb"
+    for r in rows.values():
+        r["comb"] = combined(r, args.combine_w)
+PRIMARY = next(n for n, f in PRED.items() if f == args.primary)
 thr = math.log2(1 + args.noise_pct / 100)
-pairs, ceiling = [], []
+stable, ceiling = [], []
 for grp in sorted({k[0] for k in rows}):
     keys = [k for k in rows if k[0] == grp]
     for a, b in itertools.combinations(keys, 2):
@@ -137,11 +161,32 @@ for grp in sorted({k[0] for k in rows}):
             ceiling.append(float((ra["runs"][i] < rb["runs"][i]) == (oa < ob)))
         if len({x < y for x, y in zip(ra["runs"], rb["runs"])}) > 1:
             continue
-        truth = ra["hw"] < rb["hw"]
-        sc = {n: (0.5 if ra[f] is None or rb[f] is None or ra[f] == rb[f] else float((ra[f] < rb[f]) == truth))
-              for n, f in PRED.items()}
-        sc["random"] = 0.5
-        pairs.append((grp, sc))
+        stable.append((grp, ra, rb, ra["hw"] < rb["hw"]))
+
+
+def agree(x, y, truth):
+    return 0.5 if x is None or y is None or x == y else float((x < y) == truth)
+
+
+if args.fit_w:
+    # The rule fixed in PREREG-addendum-2.md: w on a 0.05 grid maximising pooled pairwise
+    # accuracy; ties go to the w nearest 0.5, then to the larger w.
+    grid = [i / 20 for i in range(21)]
+    acc_w = {w: statistics.fmean(agree(combined(ra, w), combined(rb, w), t) for _, ra, rb, t in stable)
+             for w in grid}
+    print(f"\nCOMBINED over {len(stable)} stable development pairs")
+    for w in grid:
+        print(f"  w={w:4.2f}  {acc_w[w]:6.1%}")
+    best = max(acc_w.values())
+    pick = min((w for w in grid if acc_w[w] == best), key=lambda w: (abs(w - 0.5), -w))
+    print(f"\nSELECTED w={pick:g} ({best:.1%})")
+    sys.exit(0)
+
+pairs = []
+for grp, ra, rb, truth in stable:
+    sc = {n: agree(ra[f], rb[f], truth) for n, f in PRED.items()}
+    sc["random"] = 0.5
+    pairs.append((grp, sc))
 rng = random.Random(0)
 
 
@@ -156,7 +201,7 @@ for n in list(PRED) + ["random"]:
     v = [p[1][n] for p in pairs]
     acc[n] = (statistics.fmean(v), *ci(v))
     print(f"  {n:28s} {acc[n][0]:6.1%}  95% CI [{acc[n][1]:.1%}, {acc[n][2]:.1%}]")
-print(f"\n  {'group':22s} {'pairs':>5} {'pred':>6} {'uncal':>6} {'insts':>6} {'dram':>6}")
+print(f"\n  {'group':22s} {'pairs':>5} " + " ".join(f"{f:>6s}" for f in PRED.values()))
 for grp in sorted({p[0] for p in pairs}):
     ps = [p[1] for p in pairs if p[0] == grp]
     print(f"  {grp:22s} {len(ps):5d} " + " ".join(f"{statistics.fmean(p[n] for p in ps):6.0%}" for n in PRED))
@@ -176,13 +221,13 @@ for n, v in reg.items():
     print(f"  {n:28s} median {statistics.median(v):6.1%}   mean {statistics.fmean(v):6.1%}   "
           f"worst {max(v):6.1%}   groups {len(v)}")
 
-print("\nPRE-REGISTERED CRITERIA")
+print(f"\nPRE-REGISTERED CRITERIA ({PRIMARY})")
 best_base = max(("fewer instructions", "fewer DRAM bytes"), key=lambda n: acc[n][0])
-ok1 = acc["PREDICTOR (5-fit ensemble)"][1] > acc[best_base][0]
-print(f"  primary: CI lower {acc['PREDICTOR (5-fit ensemble)'][1]:.1%} > best non-timing baseline "
+ok1 = acc[PRIMARY][1] > acc[best_base][0]
+print(f"  primary: CI lower {acc[PRIMARY][1]:.1%} > best non-timing baseline "
       f"({best_base}) {acc[best_base][0]:.1%}: {'PASS' if ok1 else 'FAIL'}")
 med = {n: statistics.median(v) for n, v in reg.items()}
 others = [med[best_base]] + ([med["hipBLASLt Default"]] if "hipBLASLt Default" in med else [])
-ok2 = med["PREDICTOR (5-fit ensemble)"] <= min(others)
-print(f"  secondary: median regret {med['PREDICTOR (5-fit ensemble)']:.1%} <= "
+ok2 = med[PRIMARY] <= min(others)
+print(f"  secondary: median regret {med[PRIMARY]:.1%} <= "
       f"{', '.join(f'{x:.1%}' for x in others)}: {'PASS' if ok2 else 'FAIL'}")

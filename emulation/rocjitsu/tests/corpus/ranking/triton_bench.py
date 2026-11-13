@@ -72,11 +72,16 @@ def softmax_kernel(out_ptr, in_ptr, n_rows, n_cols, stride, ROWS: tl.constexpr, 
 MATMUL_SHAPES = {"mm512": (512, 512, 512), "mm1024": (1024, 1024, 1024),
                  "mm64x4096x1024": (64, 4096, 1024), "mm2048x512x1024": (2048, 512, 1024),
                  # Held-out (PREREG-addendum-1.md)
-                 "mm768": (768, 768, 768), "mm128x2048x2048": (128, 2048, 2048)}
+                 "mm768": (768, 768, 768), "mm128x2048x2048": (128, 2048, 2048),
+                 # Held-out set 2 (PREREG-addendum-2.md)
+                 "mm256x3072x1024": (256, 3072, 1024), "mm1536x640x512": (1536, 640, 512)}
 SOFTMAX_SHAPES = {"sm4096x1024": (4096, 1024), "sm1024x4096": (1024, 4096), "sm8192x512": (8192, 512),
                   # Held-out (PREREG-addendum-1.md)
-                  "sm2048x2048": (2048, 2048), "sm16384x256": (16384, 256)}
+                  "sm2048x2048": (2048, 2048), "sm16384x256": (16384, 256),
+                  # Held-out set 2 (PREREG-addendum-2.md)
+                  "sm4096x512": (4096, 512), "sm1024x3072": (1024, 3072)}
 HELDOUT_TRITON = ["mm768", "mm128x2048x2048", "sm2048x2048", "sm16384x256"]
+HELDOUT2_TRITON = ["mm256x3072x1024", "mm1536x640x512", "sm4096x512", "sm1024x3072"]
 
 
 def cases():

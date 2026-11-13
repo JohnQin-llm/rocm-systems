@@ -12,7 +12,8 @@ Scores are pairwise ordering accuracy on pairs hardware separates, and the
 regret of the predicted-best pick, against baselines that need no timing model
 (executed instructions, DRAM bytes, hipBLASLt's own `Default`, random). The
 evaluation protocol and its success criteria were fixed before the data in
-[PREREG.md](PREREG.md) and [PREREG-addendum-1.md](PREREG-addendum-1.md).
+[PREREG.md](PREREG.md), [PREREG-addendum-1.md](PREREG-addendum-1.md) and
+[PREREG-addendum-2.md](PREREG-addendum-2.md).
 
 Measurements are written under `$RANKING_WORK` (default: the current
 directory), never into the tree. `ROCJITSU_BIN` names the emulator
@@ -58,3 +59,5 @@ traffic next to hardware counters (rocprofv3) for the picks of a group;
 
 Primary criterion met for hipBLASLt, not for Triton; secondary met for Triton,
 not for hipBLASLt. Single-row GEMV shapes and Triton matmul are the weak cases.
+These scores predate the memory-request routing fix (PREREG-addendum-2.md),
+which the model had wrong while they were measured.
