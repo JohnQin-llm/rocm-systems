@@ -85,6 +85,9 @@ public:
   void dispatch_end(std::uint32_t dispatch_id, std::uint32_t queue_id);
   ComputeUnitDes &compute_unit(std::uint32_t index);
 
+  /// @brief The timed compute unit a workgroup runs on: XCD-interleaved, as placed by the SPI.
+  std::size_t fold_unit(std::uint64_t workgroup) const;
+
   // -- Used by the compute units -------------------------------------------
   /// @brief Hand one memory instruction's lines to the hierarchy.
   /// @returns The tick the access completes.

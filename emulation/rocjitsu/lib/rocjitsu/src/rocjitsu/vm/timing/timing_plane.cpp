@@ -241,8 +241,23 @@ void TimingPlane::trace_dispatch(const DispatchDes &dispatch) {
   std::fwrite(line.data(), 1, line.size(), trace_);
 }
 
+std::size_t TimingPlane::fold_unit(std::uint64_t workgroup) const {
+  // The SPI hands workgroups to XCDs round-robin -- XCD i takes those congruent
+  // to i, as rocjitsu's functional dispatch does -- and then to that XCD's
+  // compute units in turn. Units are wired to dies in contiguous blocks, so a
+  // plain workgroup % units would put consecutive workgroups behind one L2 and
+  // undo the L2 locality that tile remaps (hipBLASLt's XCC remap, Triton's
+  // GROUP_M) build for the hardware placement.
+  const std::size_t units = compute_units_.size();
+  const std::size_t dies = std::max<std::size_t>(1, l2_.size());
+  const std::size_t per_die = std::max<std::size_t>(1, (units + dies - 1) / dies);
+  const std::size_t die = static_cast<std::size_t>(workgroup % dies);
+  const std::size_t unit = static_cast<std::size_t>((workgroup / dies) % per_die);
+  return std::min(units - 1, die * per_die + unit);
+}
+
 ComputeUnitDes &TimingPlane::compute_unit(std::uint32_t index) {
-  return *compute_units_[index % compute_units_.size()];
+  return *compute_units_[fold_unit(index)];
 }
 
 std::uint64_t TimingPlane::issue_memory(const MemoryRequest &request,
@@ -250,7 +265,7 @@ std::uint64_t TimingPlane::issue_memory(const MemoryRequest &request,
   if (compute_units_.empty() || lines.empty())
     return request.issued_tick;
 
-  const std::size_t unit = request.origin.compute_unit % compute_units_.size();
+  const std::size_t unit = fold_unit(request.origin.compute_unit);
   MemoryRequest routed = request;
   routed.line_base = static_cast<std::uint32_t>(line_pool_.size());
   routed.line_count = static_cast<std::uint32_t>(lines.size());
@@ -340,7 +355,7 @@ void TimingPlane::wave_begin(std::uint32_t compute_unit, std::uint32_t slot,
                              std::uint32_t dispatch_id, std::uint32_t queue_id) {
   if (!tuning_.enabled || compute_units_.empty())
     return;
-  const std::size_t unit = compute_unit % compute_units_.size();
+  const std::size_t unit = fold_unit(compute_unit);
   const std::uint64_t key = packed_key(dispatch_id, queue_id);
   DispatchDes *dispatch = nullptr;
   {
@@ -373,13 +388,13 @@ void TimingPlane::instruction(std::uint32_t compute_unit, std::uint32_t slot,
                               const RetiredInstruction &retired) {
   if (!tuning_.enabled || compute_units_.empty())
     return;
-  compute_units_[compute_unit % compute_units_.size()]->instruction(slot, retired);
+  compute_units_[fold_unit(compute_unit)]->instruction(slot, retired);
 }
 
 void TimingPlane::wave_end(std::uint32_t compute_unit, std::uint32_t slot) {
   if (!tuning_.enabled || compute_units_.empty())
     return;
-  compute_units_[compute_unit % compute_units_.size()]->wave_end(slot);
+  compute_units_[fold_unit(compute_unit)]->wave_end(slot);
 }
 
 void TimingPlane::forward_to_channels(const MemoryRequest &request) {
