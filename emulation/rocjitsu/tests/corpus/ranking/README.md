@@ -61,3 +61,19 @@ Primary criterion met for hipBLASLt, not for Triton; secondary met for Triton,
 not for hipBLASLt. Single-row GEMV shapes and Triton matmul are the weak cases.
 These scores predate the memory-request routing fix (PREREG-addendum-2.md),
 which the model had wrong while they were measured.
+
+## Results (MI355X, held-out set 2 of PREREG-addendum-2)
+
+Model with the routing fix; COMBINED is `model^w * instructions^(1-w)` with w
+chosen on the earlier sets only (hipBLASLt 0.9, Triton 0.7).
+
+| | predictor | ordering accuracy | best non-timing baseline | median pick regret | comparison |
+|---|---|---|---|---|---|
+| hipBLASLt, 8 shapes, 120 solutions | combined | 85.1% [82.3, 87.8] | DRAM bytes 65.8% | 8.9% | hipBLASLt Default 12.7% |
+| | model | 81.3% [78.2, 84.3] | | 17.5% | |
+| Triton, 4 shapes, 56 configs | combined | 81.2% [76.5, 85.7] | instructions 67.2% | 0.4% | instructions 40.3% |
+| | model | 72.0% [66.9, 77.1] | | 1.1% | |
+
+The combined predictor meets both criteria for both libraries. The model alone
+meets the accuracy criterion for hipBLASLt (not the regret one) and the regret
+criterion for Triton (its accuracy CI lower bound, 66.9%, misses 67.2%).
