@@ -285,6 +285,7 @@ second group asserts a result value.
 | `meter_rank.py` | Scores an emulated run on *ranking*: among variants of one case (eager / compiled / triton), does the model order them as hardware does, and how far off is its speedup. See `docs/timing-mi355x.md`. |
 | `meter_fit.py` | Fits `meter_refit.py`'s composition knobs to a hardware reference by differential evolution, with a train/test split by variant group, and reports absolute and ranking accuracy on both. |
 | `streamk_gemv_repro.py` | Minimal hipBLASLt Stream-K reproducer (1x4096 @ 4096x4096) for the scalar-memory flag-polling hang described in `docs/timing-mi355x.md`. |
+| `ranking/` | Variant-ranking benchmark: hipBLASLt solutions and Triton configurations timed on guarded hardware and under the emulator, scored against non-timing baselines under a pre-registered protocol. See `ranking/README.md`. |
 
 `meter_report.py --selftest` renders a synthetic payload in a temporary
 directory, checks that the hand-computed statistics reach both formats, that
