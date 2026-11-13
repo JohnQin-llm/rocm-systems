@@ -265,7 +265,7 @@ std::uint64_t TimingPlane::issue_memory(const MemoryRequest &request,
   if (compute_units_.empty() || lines.empty())
     return request.issued_tick;
 
-  const std::size_t unit = fold_unit(request.origin.compute_unit);
+  const std::size_t unit = request.origin.compute_unit % compute_units_.size();
   MemoryRequest routed = request;
   routed.line_base = static_cast<std::uint32_t>(line_pool_.size());
   routed.line_count = static_cast<std::uint32_t>(lines.size());
