@@ -43,6 +43,8 @@ ap.add_argument("--primary", choices=("pred", "comb"), default="pred",
 ap.add_argument("--ref-emu", help="a second emulation of the same items, to compare against (PREREG-addendum-3.md)")
 ap.add_argument("--ref-fits", help="the reference's tunings (default: --fits)")
 ap.add_argument("--ref-name", default="reference")
+ap.add_argument("--margin", type=float, default=0.0,
+                help="paired comparison passes when its CI lower bound exceeds this (e.g. -0.02: non-inferiority)")
 args = ap.parse_args()
 if args.primary == "comb" and args.combine_w is None:
     ap.error("--primary comb needs --combine-w")
@@ -257,7 +259,8 @@ if args.ref_emu:
     diffs = [p[1][PRIMARY] - p[1][ref_name] for p in pairs]
     lo, hi = ci(diffs)
     print(f"\nPAIRED: {PRIMARY} minus {ref_name}: {statistics.fmean(diffs):+.1%}  "
-          f"95% CI [{lo:+.1%}, {hi:+.1%}]: {'PASS' if lo > 0 else 'FAIL'} (pre-registered: lower bound > 0)")
+          f"95% CI [{lo:+.1%}, {hi:+.1%}]: {'PASS' if lo > args.margin else 'FAIL'} "
+          f"(criterion: lower bound > {args.margin:+.1%})")
 
 print(f"\nPRE-REGISTERED CRITERIA ({PRIMARY})")
 best_base = max(("fewer instructions", "fewer DRAM bytes"), key=lambda n: acc[n][0])

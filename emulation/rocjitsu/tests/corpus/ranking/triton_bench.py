@@ -101,7 +101,9 @@ MATMUL_SHAPES = {"mm512": (512, 512, 512), "mm1024": (1024, 1024, 1024),
                  "mm192x4096x512": (192, 4096, 512),
                  # Held-out set 4 (PREREG-addendum-4.md)
                  "mm320x2560x1280": (320, 2560, 1280), "mm896x896x1792": (896, 896, 1792),
-                 "mm2048x256x1536": (2048, 256, 1536)}
+                 "mm2048x256x1536": (2048, 256, 1536),
+                 # Held-out set 5 (PREREG-addendum-5.md)
+                 "mm448x1792x896": (448, 1792, 896), "mm1280x512x3072": (1280, 512, 3072)}
 SOFTMAX_SHAPES = {"sm4096x1024": (4096, 1024), "sm1024x4096": (1024, 4096), "sm8192x512": (8192, 512),
                   # Held-out (PREREG-addendum-1.md)
                   "sm2048x2048": (2048, 2048), "sm16384x256": (16384, 256),
@@ -110,13 +112,18 @@ SOFTMAX_SHAPES = {"sm4096x1024": (4096, 1024), "sm1024x4096": (1024, 4096), "sm8
                   # Held-out set 3 (PREREG-addendum-3.md); variants also choose the store policy
                   "sm3072x768": (3072, 768), "sm6144x1280": (6144, 1280), "sm1536x2560": (1536, 2560),
                   # Held-out set 4 (PREREG-addendum-4.md); variants also choose the store policy
-                  "sm2560x1792": (2560, 1792), "sm12288x640": (12288, 640), "sm768x5120": (768, 5120)}
+                  "sm2560x1792": (2560, 1792), "sm12288x640": (12288, 640), "sm768x5120": (768, 5120),
+                  # Held-out set 5 (PREREG-addendum-5.md); variants also choose the store policy
+                  "sm5120x1024": (5120, 1024), "sm2048x3584": (2048, 3584), "sm10240x384": (10240, 384),
+                  "sm3584x2048": (3584, 2048), "sm1280x4608": (1280, 4608), "sm6144x896": (6144, 896)}
 HELDOUT_TRITON = ["mm768", "mm128x2048x2048", "sm2048x2048", "sm16384x256"]
 HELDOUT2_TRITON = ["mm256x3072x1024", "mm1536x640x512", "sm4096x512", "sm1024x3072"]
 HELDOUT3_TRITON = ["mm384x1536x1536", "mm1024x384x2048", "mm192x4096x512", "sm3072x768", "sm6144x1280",
                    "sm1536x2560"]
 HELDOUT4_TRITON = ["mm320x2560x1280", "mm896x896x1792", "mm2048x256x1536", "sm2560x1792", "sm12288x640",
                    "sm768x5120"]
+HELDOUT5_TRITON = ["mm448x1792x896", "mm1280x512x3072", "sm5120x1024", "sm2048x3584", "sm10240x384",
+                   "sm3584x2048", "sm1280x4608", "sm6144x896"]
 
 
 def cases():
@@ -129,7 +136,7 @@ def cases():
     cgrid = list(itertools.product((1, 2, 4, 8, 16), (1, 2, 4, 8), range(len(STORE_POLICIES))))
     for name in SOFTMAX_SHAPES:
         rng = random.Random(f"triton-{name}")
-        if name in HELDOUT3_TRITON or name in HELDOUT4_TRITON:
+        if name in HELDOUT3_TRITON or name in HELDOUT4_TRITON or name in HELDOUT5_TRITON:
             out[name] = [f"w{w}_r{r}_c{c}" for w, r, c in rng.sample(cgrid, 12)]
         else:
             out[name] = [f"w{w}_r{r}" for w, r in rng.sample(sgrid, 12)]
