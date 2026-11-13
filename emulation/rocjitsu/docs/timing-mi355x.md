@@ -123,6 +123,34 @@ because develop restructured mirage's agent definitions. The timed config is
 config, whose 288 compute units the timing plane folds onto its 256 modelled
 ones by index, as before the rebase.
 
+## Placement and set-index fixes (2026-11-13)
+
+Comparing the timing plane's per-level traffic with rocprofv3 counters
+(`tests/corpus/ranking/counters.py`) on hipBLASLt and Triton GEMMs found two
+model errors:
+
+- Workgroups were folded onto timed compute units as `wg % units`, and units
+  are wired to XCDs in contiguous blocks, so 32 consecutive workgroups shared
+  one L2. Hardware, and rocjitsu's functional dispatch, give XCD `i` the
+  workgroups congruent to `i`; tile remaps built for that placement
+  (hipBLASLt's XCC remap, Triton's GROUP_M) lost their L2 reuse in the model.
+- The timing tag arrays indexed sets by `line % sets`, so a power-of-two row
+  pitch piled onto a few sets and evicted partly consumed lines. They now XOR
+  upper address bits into the index.
+
+Emulated L2 traffic now tracks the counters across Triton matmul
+configurations (Spearman 0.86-0.95, from 0.54-0.89). Single-row GEMV solutions
+that keep one large tile per workgroup still fetch two or four times the
+fabric traffic hardware does; that is open.
+
+The ranking benchmark built for this (`tests/corpus/ranking/`) scores the
+model on held-out shapes defined before any of them were measured: hipBLASLt
+solutions are ordered at 76.1% [72.7, 79.3] against 70.5% for the best
+non-timing baseline, but picking by the model costs 13.4% at the median
+against 9.4% for hipBLASLt's own Default; Triton configurations are ordered at
+72.5% [67.3, 77.8] against 75.0% for executed-instruction count, while the
+model's pick is within 3.2% of the best at the median.
+
 ## Open items
 
 - Port mirage's timing support to develop's mirage.
