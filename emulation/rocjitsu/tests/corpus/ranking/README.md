@@ -17,7 +17,8 @@ evaluation protocol and its success criteria were fixed before the data in
 
 Measurements are written under `$RANKING_WORK` (default: the current
 directory), never into the tree. `ROCJITSU_BIN` names the emulator
-(default `emulation/rocjitsu/build/tools/rocjitsu/rocjitsu`).
+(default `emulation/rocjitsu/build/tools/rocjitsu/rocjitsu`) and
+`ROCJITSU_CONFIG` its config (default `configs/gfx950_mi355x_kmd_timing.json`).
 
 ## Hardware measurements must own their GPU
 
