@@ -140,3 +140,28 @@ A single flush scale, however calibrated, does not capture the regime-dependent
 store-policy cost. The H3 line was computed after the scoring script's
 softmax group list came out empty (a quoting bug). Its definition and the data
 were unchanged.
+
+## Results (MI355X, held-out set 6 of PREREG-addendum-6, hipBLASLt only)
+
+R10 is the second stage with the listwise term (weight 8), and its pick defers
+to Default unless it is predicted more than 3% faster. R8c is the pairs-only
+second stage with a plain pick. 12 shapes, 179 solutions.
+
+| | pairwise accuracy | pick regret median | mean | worst | <= Default |
+|---|---|---|---|---|---|
+| R10, plain pick | 90.1% [88.0, 91.9] | 0.8% | 13.6% | 82.5% | 9/11 |
+| R10, deferring pick | | 2.9% | 16.2% | 82.5% | 9/11 |
+| R8c, plain pick | 89.2% | 0.8% | 8.0% | 39.9% | 9/11 |
+| hipBLASLt Default | | 12.4% | 12.6% | 30.6% | |
+
+The accuracy criterion holds. Both regret tests fail:
+
+- R10's deferring pick minus Default: +3.5 [-9.9, +20.8].
+- R10's deferring pick minus R8c: +7.4 [+0.0, +20.9].
+
+R10 and R8c pick the same kernel on 10 of 12 shapes; two shapes make up the difference:
+
+- On m16_n3072_k6144, R10 picks a kernel 82.5% off the best, with a predicted 27.7% advantage over Default. That kernel is an LDS-bypassing tile (LDSB0). The listwise fits put the LDS weight at 0.50-0.75 in three of five seeds, against at most 0.04 for the pairs-only fits.
+- On m36_n6656_k1536, R10's pick is the true best, but its predicted 2.1% advantage sends it back to Default (14.1%).
+
+The listwise term overfits a feature of the development winners, which cross-validation by group did not catch. The pairs-only recipe stays.
