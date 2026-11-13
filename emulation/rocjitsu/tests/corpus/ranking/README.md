@@ -118,3 +118,25 @@ overlapped on the same GPUs after a relaunch, and the guard rejected every
 attempt. Re-measured afterwards and scored as a labelled supplement, with the
 predictions unchanged: all 84 configs, R8 78.7% [74.9, 82.3] against P7 77.2%,
 paired +1.6 [-0.7, +3.8], median regret 3.3%. The conclusion is the same.
+
+## Results (MI355X, held-out set 5 of PREREG-addendum-5)
+
+R9 recalibrates the release-flush scale on a 13-size copy sweep instead of 3
+sizes; R8b is the same pipeline with the 3-size scale. Both use the second
+calibration stage on the same development groups. Model alone.
+
+| | R9 accuracy | R8b accuracy | R9 - R8b (paired) | best non-timing baseline | R9 median regret | comparison |
+|---|---|---|---|---|---|---|
+| hipBLASLt, 8 shapes, 117 solutions | 87.4% [84.7, 90.1] | 87.2% | +0.2 [-0.4, +0.9] | instructions 64.0% | 14.2% | hipBLASLt Default 11.2% |
+| Triton, 8 shapes, 104 configs | 79.4% [75.7, 82.9] | 79.8% | -0.4 [-1.9, +1.0] | instructions 58.8% | 6.1% | instructions 57.4% |
+| of which the 6 store-policy softmaxes | 90.0% [86.6, 93.1] | 89.0% | +1.0 [-0.7, +2.8] | | 3.7% | |
+
+H1 holds for both libraries. H2 holds for Triton but not hipBLASLt: on this
+set R9 and R8b both pick at 14.2% median regret against Default's 11.2%.
+H4 (non-inferiority for hipBLASLt) holds. H3, the target of the recalibration
+(the softmax gain), does not: +1.0 point, CI spanning 0.
+
+A single flush scale, however calibrated, does not capture the regime-dependent
+store-policy cost. The H3 line was computed after the scoring script's
+softmax group list came out empty (a quoting bug). Its definition and the data
+were unchanged.
