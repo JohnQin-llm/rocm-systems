@@ -23,6 +23,7 @@
 - [System design](#-system-design)
 - [How it works](#-how-it-works)
 - [Capabilities and evidence](#-capabilities-and-evidence)
+- [Examples on real cases](#-examples-on-real-cases)
 - [Limitations](#-limitations)
 - [Quick start](#-quick-start)
 - [How claims are validated](#-how-claims-are-validated)
@@ -52,78 +53,15 @@ This project adds a **calibrated, validated timing model** on top of it, to answ
 
 ### Architecture
 
-```mermaid
-flowchart LR
-    subgraph APP["🧑‍💻 Unmodified application"]
-        P["PyTorch / Triton / hipBLASLt<br/>Python program"]
-    end
-
-    subgraph RJ["🧪 rocjitsu: functional emulation"]
-        K["LD_PRELOAD<br/>KFD / HSA emulation"]
-        CP["Command processor<br/>AQL dispatch"]
-        VM["Functional VM<br/>8 XCD × 36 CU<br/>waves execute every instruction"]
-    end
-
-    subgraph TP["⏱ Timing plane"]
-        COL["Collector<br/>instruction stream → timing events"]
-        CU["CU model (DES)<br/>issue ports, scoreboard,<br/>wait counters"]
-        MEM["Memory hierarchy (DES)<br/>L1 → L2 → fabric → MALL → DRAM"]
-        DD["Dispatch model<br/>bandwidth ledger + composition"]
-    end
-
-    subgraph CAL["🎯 Calibration and prediction"]
-        TR[("timing trace<br/>one JSON line per dispatch")]
-        RC["recompose()<br/>composition + knobs"]
-        FIT[("calibrated knobs<br/>5 fits")]
-        PRED["predicted cycles<br/>geometric mean of 5 fits"]
-    end
-
-    subgraph USE["📊 Uses"]
-        RANK["variant ranking / picking"]
-        AG["agent feedback"]
-        DIAG["bottleneck diagnosis"]
-    end
-
-    P --> K --> CP --> VM
-    VM -- "retired instructions<br/>+ lane addresses" --> COL
-    COL --> CU --> MEM
-    CU --> DD
-    MEM --> DD
-    DD --> TR --> RC
-    FIT --> RC --> PRED
-    PRED --> RANK & AG
-    TR --> DIAG
-```
+<p align="center"><img src="images/timing-ranking/architecture.svg" alt="System architecture" width="100%"></p>
 
 ### Memory hierarchy and write policy
 
-```mermaid
-flowchart TB
-    W["memory instruction of a wave<br/>(one instruction = one request carrying many lines)"]
-    L1["L1 vector · one per CU<br/>loads allocate · stores write through, no allocate"]
-    L2["L2 · 4 MB per XCD · write-back<br/>plain store: allocate dirty, never read<br/>.cs (nt): allocate as least recently used, leaves early<br/>.wt (sc0 sc1): passes through"]
-    FAB["fabric · 64 B interleave across channels"]
-    MALL["MALL 256 MB · write-back<br/>memory side"]
-    DRAM["HBM DRAM<br/>row-buffer locality"]
-    FL{{"release at kernel end<br/>writes back dirty L2 lines<br/>→ serial flush term"}}
-
-    W --> L1
-    L1 -- "load miss / every store" --> L2
-    L2 -- miss --> FAB
-    L2 -. "dirty eviction → async write-back" .-> FAB
-    FAB --> MALL
-    MALL -- "miss / dirty eviction" --> DRAM
-    L2 ==> FL
-```
+<p align="center"><img src="images/timing-ranking/memory-hierarchy.svg" alt="Memory hierarchy and write policy" width="100%"></p>
 
 ### Workgroup placement (as the SPI does it)
 
-```mermaid
-flowchart LR
-    WG["workgroup id"] -->|"wg % 8"| XCD["XCD 0..7"]
-    WG -->|"(wg / 8) % 32"| CUX["CU within the XCD"]
-    XCD --> CUX
-```
+<p align="center"><img src="images/timing-ranking/placement.svg" alt="Workgroup placement" width="100%"></p>
 
 > hipBLASLt XCC remapping and Triton GROUP_M both assume this placement. Get it wrong and tiles that share data land on different XCD L2s; GEMV fabric traffic came out 2–4× the hardware counters.
 
@@ -168,15 +106,7 @@ cycles = fixed
 
 ### 4. Two-stage calibration
 
-```mermaid
-flowchart LR
-    C[("meter corpus<br/>260 cases, hardware times")] --> S1["Stage 1 · meter_fit<br/>differential evolution<br/>on absolute time"]
-    M[("copy microbenchmark<br/>store policy × size")] --> F["flush_scale calibration"]
-    S1 --> F
-    R[("ranking development set<br/>1334 variants / 6802 stable pairs")] --> S2["Stage 2 · rank_fit<br/>refit the 9 knobs that decide which variant wins<br/>pairwise logistic loss + pull toward stage 1"]
-    F --> S2
-    S2 --> K[("5 knob sets<br/>ensembled by geometric mean")]
-```
+<p align="center"><img src="images/timing-ranking/calibration.svg" alt="Two-stage calibration" width="100%"></p>
 
 > **Why a second stage?** The corpus constrains absolute time, not which of two variants wins. Knobs such as the LDS and MFMA weights and the stall / latency split varied 20× to 2000× across seeds. Stage 2 pins them on ranking data. Cross-validated by group, it lifts GEMM pairwise accuracy from 84.8% to 88.8% and cuts pick regret from 15.1% to 5.3%.
 
@@ -197,19 +127,7 @@ With both, results are bit-for-bit reproducible, and one thread is also about 2.
 
 Pairwise accuracy is how often the model orders two variants correctly when hardware separates them by more than 10%.
 
-```
-GEMM    held-out 4   ████████████████████████████████████░░░░  89.0%
-        held-out 5   ███████████████████████████████████░░░░░  87.4%
-        held-out 6   ████████████████████████████████████░░░░  89.2%
-        best rule    ██████████████████████████░░░░░░░░░░░░░░  60-68%
-
-Triton  held-out 4   ███████████████████████████████░░░░░░░░░  78.7% *
-        held-out 5   ███████████████████████████████░░░░░░░░░  79.4%
-        └ store-policy softmax ████████████████████████████████████░░░░  90.0%
-        best rule    ███████████████████████░░░░░░░░░░░░░░░░░  58-60%
-
-hardware ceiling     ███████████████████████████████████████░  98-100%
-```
+<p align="center"><img src="images/timing-ranking/results.svg" alt="Ranking accuracy on held-out sets" width="85%"></p>
 
 <sub>best rule = the best rule that needs no timing model (fewer instructions, or fewer DRAM bytes). * after a labelled re-measurement, see [the ranking README](../tests/corpus/ranking/README.md).</sub>
 
@@ -242,6 +160,56 @@ Agents with emulator feedback discovered the `.cs` / `.wt` store hints on their 
 
 - Each dispatch reports issue, latency, per-level bandwidth and flush, plus bytes per level.
 - Fabric bytes track hardware counters with Spearman **0.96–0.97**, and L2 traffic **0.86–1.00**.
+
+---
+
+## 🧪 Examples on real cases
+
+Every example below uses a predictor that had **not seen** the group during calibration, and hardware times measured on MI355X (median of 3 guarded runs). The figures are regenerated by `images/timing-ranking/make_figures.py`.
+
+### 1. Picking a hipBLASLt solution: a win
+
+<p align="center"><img src="images/timing-ranking/example-gemm-win.svg" alt="GEMM 768x1280x1024: emulator vs hardware ranking" width="100%"></p>
+
+The emulator ranks 15 solutions of a 768×1280×1024 bf16 GEMM without running them on a GPU. Its first choice is the fastest on hardware (8.50 us); hipBLASLt Default is 30% slower. The pathological solution (3.9× slower on hardware) is predicted at 4.4×.
+
+### 2. Where it misses
+
+<p align="center"><img src="images/timing-ranking/example-gemm-miss.svg" alt="GEMM 72x2560x3072: a miss" width="100%"></p>
+
+For 72×2560×3072 the model predicts its top five within 10% of each other, while hardware spreads them by 40%. The first choice lands 40% off the best, and the true best is its third choice. The ordering at the bottom (the 5× outlier, the slow split-K kernels) is still right. This is the typical failure: a confident pick inside a region the model sees as flat. It is why the model should shortlist and hardware should confirm.
+
+### 3. Store-policy variants of a Triton softmax
+
+<p align="center"><img src="images/timing-ranking/example-softmax.svg" alt="Triton softmax 2048x3584: emulator vs hardware ranking" width="100%"></p>
+
+The 12 variants of a 2048×3584 softmax differ in warps, rows per program, and the cache policy of the output store. The model top 3 are exactly the three fastest on hardware: write-through stores, one row per program. Every plain-store variant ranks below them on both sides.
+
+### 4. An agent optimizing without a GPU
+
+<p align="center"><img src="images/timing-ranking/example-agent.svg" alt="Agent trajectory with emulator feedback" width="100%"></p>
+
+With only the emulator estimate as feedback, the agent removed masked lanes, moved to one wave per row, then found that write-through stores were the largest remaining win. Measured afterwards on hardware, its kernel is 2.68× faster than the baseline. Agents given hardware timings averaged 2.69×.
+
+### 5. Diagnosis that matches the hardware counters
+
+Fabric read traffic of a 1×1024×4096 GEMV, per call, against `TCC_EA0_RDREQ_*`. The first column is from before a request-routing bug in the timing plane was fixed; the traffic comparison is how that bug was found.
+
+| hipBLASLt solution | emulator, before the fix | emulator, after | hardware |
+|---|---|---|---|
+| Default | 8.57 MB | 8.52 MB | 8.52 MB |
+| 437911 | 33.72 MB | 8.51 MB | 8.55 MB |
+| 437641 | 33.71 MB | 8.52 MB | 8.57 MB |
+| 437890 | 17.24 MB | 8.58 MB | 8.65 MB |
+| 437451 | 18.47 MB | 12.37 MB | 12.30 MB |
+
+Bytes written back by the release at the end of a softmax kernel, emulator against `TCC_ALL_TC_OP_WB_WRITEBACK`:
+
+| output store | emulator | hardware |
+|---|---|---|
+| plain | 16.8 MB | 13.2 MB |
+| `.cs` streaming | 1.3 MB | 2.5 MB |
+| `.wt` write-through | 0 | 0 |
 
 ---
 
@@ -310,19 +278,7 @@ python3 $T/rank_fit.py --dev gemm:hw:emu triton:triton_hw:triton_emu --fits "sta
 
 ## 🧾 How claims are validated
 
-```mermaid
-sequenceDiagram
-    participant D as Development data (seen)
-    participant P as PREREG-addendum-N.md
-    participant H as New held-out set
-    participant S as prereg_score.py
-    D->>P: fix model, knobs, rules (files by sha256)
-    P->>P: commit (hash recorded)
-    P->>H: define new shapes / cases (no data yet)
-    H->>H: hardware truth (gpu_guard, 3 runs, one process at a time)
-    H->>S: emulate + score exactly once
-    S-->>D: the set becomes development data
-```
+<p align="center"><img src="images/timing-ranking/validation.svg" alt="How every claim is validated" width="100%"></p>
 
 | set | tested | outcome |
 |---|---|---|
