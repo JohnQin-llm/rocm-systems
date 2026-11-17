@@ -174,6 +174,8 @@ void TimingPlane::trace_dispatch(const DispatchDes &dispatch) {
   number("placement", static_cast<unsigned long long>(terms.placement));
   number("latency", static_cast<unsigned long long>(terms.latency));
   number("filling", static_cast<unsigned long long>(terms.filling));
+  number("flush", static_cast<unsigned long long>(terms.flush));
+  number("flush_bytes", static_cast<unsigned long long>(dispatch.flush_bytes()));
   number("critical_path", static_cast<unsigned long long>(terms.critical_path));
   number("worst_stall", static_cast<unsigned long long>(terms.worst_stall));
   number("fill", static_cast<unsigned long long>(terms.fill));
@@ -445,12 +447,19 @@ void TimingPlane::forward_to_channels(const MemoryRequest &request) {
   }
 
   // Every part but the first is an extra completion the waiting access must
-  // see before it is answered.
-  awaited_outstanding_ += distinct - 1;
+  // see before it is answered. A write-back is waited on by nobody, and
+  // counting its parts would leave the access waiting for completions that
+  // never count down.
+  if (request.origin.sequence == awaited_)
+    awaited_outstanding_ += distinct - 1;
   for (std::size_t channel = 0; channel < channel_scratch_.size(); ++channel) {
     if (channel_scratch_[channel] == 0)
       continue;
     MemoryRequest part = request;
+    // Past the GPU's own caches a system-scope store is ordinary memory traffic:
+    // the memory-side cache is part of memory, and on MI355X every store policy
+    // reaches it the same way.
+    part.write_through = false;
     part.line_bytes = static_cast<std::uint32_t>(stride);
     part.line_base = static_cast<std::uint32_t>(line_pool_.size());
     part.line_count = 0;
@@ -575,6 +584,12 @@ void TimingPlane::dispatch_end(std::uint32_t dispatch_id, std::uint32_t queue_id
     open_.erase(found);
   }
   const std::uint64_t key = packed_key(dispatch_id, queue_id);
+  // The kernel's release: what the second-level caches still hold dirty is
+  // written back now, after its last wavefront.
+  std::uint64_t flushed = 0;
+  for (auto &cache : l2_)
+    flushed += cache->flush();
+  dispatch->set_flush_bytes(flushed);
   charge_bandwidth(*dispatch, key);
   dispatch->end();
   trace_dispatch(*dispatch);

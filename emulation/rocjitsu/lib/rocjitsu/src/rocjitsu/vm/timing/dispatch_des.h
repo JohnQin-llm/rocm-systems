@@ -186,6 +186,9 @@ public:
     std::uint64_t placement = 0;
     std::uint64_t latency = 0;
     std::uint64_t filling = 0;
+    /// @brief Writing back what the write-back caches still held dirty when the
+    ///        last wavefront finished: the kernel's release, after its work.
+    std::uint64_t flush = 0;
     std::uint64_t fixed = 0;
     /// @brief Longest single wavefront's dependence chain, before hiding.
     std::uint64_t critical_path = 0;
@@ -243,6 +246,9 @@ public:
   /// @brief Where this dispatch's traffic is charged. Handed to whatever walks
   ///        the hierarchy on its behalf.
   BandwidthLedger &ledger() { return ledger_; }
+  /// @brief Bytes the release at this dispatch's end writes back; see Terms::flush.
+  void set_flush_bytes(std::uint64_t bytes) { flush_bytes_ = bytes; }
+  std::uint64_t flush_bytes() const { return flush_bytes_; }
   const BandwidthLedger &ledger() const { return ledger_; }
 
   const DispatchShape &shape() const { return shape_; }
@@ -262,6 +268,7 @@ private:
   std::atomic<bool> acquired_{false};
   std::uint64_t resident_waves_ = 1;
   std::uint64_t cycles_ = 0;
+  std::uint64_t flush_bytes_ = 0;
   std::uint64_t waves_ = 0;
   std::uint64_t instructions_ = 0;
   std::uint64_t stall_cycles_ = 0;

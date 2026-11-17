@@ -115,6 +115,8 @@ struct RetiredInstruction {
   MemorySpace space = MemorySpace::None;
   bool is_load = true;
   bool non_temporal = false;
+  /// @brief A store at system scope, which no cache may hold dirty.
+  bool write_through = false;
   bool addresses_known = true;
   std::uint64_t scalar_address = 0;
   std::uint32_t scalar_bytes = 4;

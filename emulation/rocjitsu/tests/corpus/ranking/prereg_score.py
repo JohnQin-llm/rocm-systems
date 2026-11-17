@@ -5,6 +5,7 @@
   prereg_score.py triton --hw triton_hw   --emu triton_emu
   prereg_score.py gemm ... --fit-w --groups DEV...              (PREREG-addendum-2.md: choose w)
   prereg_score.py gemm ... --combine-w W --primary comb --groups HELDOUT2...
+  prereg_score.py gemm ... --ref-emu DIR --ref-fits GLOB --ref-name NAME   (PREREG-addendum-3.md: paired comparison)
 
 Predictor: per item, the geometric mean over the prereg-fit-s*.json tunings of
 the recomposed modelled cycles of the item's dispatches (bench_refit.py's
@@ -39,6 +40,17 @@ ap.add_argument("--fit-w", action="store_true",
                      "PREREG-addendum-2.md rule selects, then stop (development data only)")
 ap.add_argument("--primary", choices=("pred", "comb"), default="pred",
                 help="predictor the pre-registered criteria apply to")
+ap.add_argument("--ref-emu", help="a second emulation of the same items, to compare against (PREREG-addendum-3.md)")
+ap.add_argument("--ref-fits", help="the reference's tunings (default: --fits)")
+ap.add_argument("--ref-name", default="reference")
+ap.add_argument("--defer", type=float,
+                help="also pick with the deferring rule: the primary predictor's pick only when it predicts it "
+                     "more than this fraction faster than Default, otherwise Default (PREREG-addendum-6.md)")
+ap.add_argument("--regret-tests", action="store_true",
+                help="paired bootstrap over groups of mean pick regret: the deferring (or primary) pick against "
+                     "Default and against the reference (PREREG-addendum-6.md)")
+ap.add_argument("--margin", type=float, default=0.0,
+                help="paired comparison passes when its CI lower bound exceeds this (e.g. -0.02: non-inferiority)")
 args = ap.parse_args()
 if args.primary == "comb" and args.combine_w is None:
     ap.error("--primary comb needs --combine-w")
@@ -56,11 +68,18 @@ sys.path.insert(0, str(TOOLS.parent))
 import meter_refit as mr  # noqa: E402
 
 base = mr.config_defaults(mr.load_config(str(ROOT / "configs/gfx950_mi355x_kmd_timing.json")))
-tunings = []
-for f in sorted(glob.glob(str(B / args.fits))):
-    t = dict(base)
-    t.update(json.loads(Path(f).read_text())["knobs"])
-    tunings.append(t)
+
+
+def load_tunings(pattern):
+    out = []
+    for f in sorted(glob.glob(str(B / pattern))):
+        t = dict(base)
+        t.update(json.loads(Path(f).read_text())["knobs"])
+        out.append(t)
+    return out
+
+
+tunings = load_tunings(args.fits)
 G, I = ("shape", "solution") if args.bench == "gemm" else ("case", "variant")
 
 
@@ -82,53 +101,70 @@ def load_hw():
 
 
 hw = load_hw()
-rows, dropped = {}, defaultdict(int)
-for p in glob.glob(str(B / args.emu / "*__*.json")):
-    if p.endswith(".raw.json"):
-        continue
-    e = json.loads(Path(p).read_text())
-    key = (e[G], e[I])
-    if args.groups and key[0] not in args.groups:
-        continue
-    if not all(key in h for h in hw):
-        dropped["no clean hardware in every run"] += 1
-        continue
-    if args.bench == "gemm":
-        same = set(e.get("kernels", [])) == {k for k in hw[0][key].get("kernels", []) if k.startswith("Cijk")}
-        prefix = "Cijk"
-    else:
-        same = e.get("kernel_hash") and e.get("kernel_hash") == hw[0][key].get("kernel_hash") and \
-            e.get("max_err", 1) < 0.05 and hw[0][key].get("max_err", 1) < 0.05
-        prefix = e.get("kernel_name") or "?"
-    if not same:
-        dropped["kernel mismatch or wrong result"] += 1
-        continue
-    trace = Path(p[:-5] + ".trace.jsonl")
-    disp = []
-    for line in trace.read_text().splitlines() if trace.exists() else []:
-        try:
-            d = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if str(d.get("kernel", "")).startswith(prefix):
-            disp.append(d)
-    if not disp:
-        dropped["no traced dispatch"] += 1
-        continue
-    # Hardware and the emulator's event bracket both time warm calls only; the
-    # first call(s) here run on cold caches. Score the last SAMPLES calls, per call.
-    per = max(1, len(disp) // per_call(e))       # dispatches per call
-    warm = disp[-SAMPLES * per:] if args.warm_only else disp
 
-    def call_cycles(t, f=lambda d, t: mr.recompose(d, t)):
-        sums = [sum(f(d, t) for d in warm[i:i + per]) for i in range(0, len(warm), per)]
-        return statistics.median(sums) if args.warm_only else sum(sums)
-    pred = math.exp(statistics.fmean(math.log(call_cycles(t)) for t in tunings))
-    runs = [h[key]["kernel_us"] for h in hw]
-    rows[key] = dict(hw=statistics.median(runs), runs=runs, pred=pred,
-                     uncal=call_cycles(None, lambda d, t: d["cycles"]),
-                     insts=e.get("gemm_instructions") or e.get("instructions") or None,
-                     dram=e.get("gemm_dram_bytes") or e.get("dram_bytes") or None)
+
+def load_emu(emu_dir, tunings):
+    """Per item: the ensemble prediction over warm calls, after the identity checks."""
+    rows, dropped = {}, defaultdict(int)
+    for p in glob.glob(str(B / emu_dir / "*__*.json")):
+        if p.endswith(".raw.json"):
+            continue
+        e = json.loads(Path(p).read_text())
+        key = (e[G], e[I])
+        if args.groups and key[0] not in args.groups:
+            continue
+        if not all(key in h for h in hw):
+            dropped["no clean hardware in every run"] += 1
+            continue
+        if args.bench == "gemm":
+            same = set(e.get("kernels", [])) == {k for k in hw[0][key].get("kernels", []) if k.startswith("Cijk")}
+            prefix = "Cijk"
+        else:
+            same = e.get("kernel_hash") and e.get("kernel_hash") == hw[0][key].get("kernel_hash") and \
+                e.get("max_err", 1) < 0.05 and hw[0][key].get("max_err", 1) < 0.05
+            prefix = e.get("kernel_name") or "?"
+        if not same:
+            dropped["kernel mismatch or wrong result"] += 1
+            continue
+        trace = Path(p[:-5] + ".trace.jsonl")
+        disp = []
+        for line in trace.read_text().splitlines() if trace.exists() else []:
+            try:
+                d = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if str(d.get("kernel", "")).startswith(prefix):
+                disp.append(d)
+        if not disp:
+            dropped["no traced dispatch"] += 1
+            continue
+        # Hardware and the emulator's event bracket both time warm calls only; the
+        # first call(s) here run on cold caches. Score the last SAMPLES calls, per call.
+        per = max(1, len(disp) // per_call(e))       # dispatches per call
+        warm = disp[-SAMPLES * per:] if args.warm_only else disp
+
+        def call_cycles(t, f=lambda d, t: mr.recompose(d, t)):
+            sums = [sum(f(d, t) for d in warm[i:i + per]) for i in range(0, len(warm), per)]
+            return statistics.median(sums) if args.warm_only else sum(sums)
+        pred = math.exp(statistics.fmean(math.log(call_cycles(t)) for t in tunings))
+        runs = [h[key]["kernel_us"] for h in hw]
+        rows[key] = dict(hw=statistics.median(runs), runs=runs, pred=pred,
+                         uncal=call_cycles(None, lambda d, t: d["cycles"]),
+                         insts=e.get("gemm_instructions") or e.get("instructions") or None,
+                         dram=e.get("gemm_dram_bytes") or e.get("dram_bytes") or None)
+    return rows, dropped
+
+
+rows, dropped = load_emu(args.emu, tunings)
+if args.ref_emu:
+    # An item is scored only where both emulations ran the kernel hardware ran.
+    ref_rows, _ = load_emu(args.ref_emu, load_tunings(args.ref_fits or args.fits))
+    for key in list(rows):
+        if key in ref_rows:
+            rows[key]["ref"] = ref_rows[key]["pred"]
+        else:
+            del rows[key]
+            dropped["no valid reference emulation"] += 1
 print(f"{args.bench}: {len(rows)} items scored over {len({k[0] for k in rows})} groups; "
       f"{len(tunings)} tunings; hardware runs {len(hw)}; dropped {dict(dropped)}")
 
@@ -146,6 +182,8 @@ if args.combine_w is not None:
     PRED[f"COMBINED (w={args.combine_w:g})"] = "comb"
     for r in rows.values():
         r["comb"] = combined(r, args.combine_w)
+if args.ref_emu:
+    PRED[f"REFERENCE ({args.ref_name})"] = "ref"
 PRIMARY = next(n for n, f in PRED.items() if f == args.primary)
 thr = math.log2(1 + args.noise_pct / 100)
 stable, ceiling = [], []
@@ -207,19 +245,56 @@ for grp in sorted({p[0] for p in pairs}):
     print(f"  {grp:22s} {len(ps):5d} " + " ".join(f"{statistics.fmean(p[n] for p in ps):6.0%}" for n in PRED))
 
 print("\nDECISION (regret = hardware time of the pick / best - 1)")
-reg = defaultdict(list)
+by_group = defaultdict(dict)     # predictor -> group -> regret
+DEFER = f"{PRIMARY.split(' (')[0]}, defer >{args.defer:.0%}" if args.defer is not None else None
 for grp in sorted({k[0] for k in rows}):
     keys = [k for k in rows if k[0] == grp]
     best = min(rows[k]["hw"] for k in keys)
     for n, f in PRED.items():
         ks = [k for k in keys if rows[k][f]]
-        reg[n].append(rows[min(ks, key=lambda k: rows[k][f])]["hw"] / best - 1)
-    if args.bench == "gemm" and (grp, "Default") in rows:
-        reg["hipBLASLt Default"].append(rows[(grp, "Default")]["hw"] / best - 1)
-    reg["random (expected)"].append(statistics.fmean(rows[k]["hw"] / best - 1 for k in keys))
+        by_group[n][grp] = rows[min(ks, key=lambda k: rows[k][f])]["hw"] / best - 1
+    dkey = (grp, "Default")
+    if args.bench == "gemm" and dkey in rows:
+        by_group["hipBLASLt Default"][grp] = rows[dkey]["hw"] / best - 1
+        if DEFER:
+            f = PRED[PRIMARY]
+            pick = min((k for k in keys if rows[k][f]), key=lambda k: rows[k][f])
+            choice = pick if rows[dkey][f] / rows[pick][f] > 1 + args.defer else dkey
+            by_group[DEFER][grp] = rows[choice]["hw"] / best - 1
+    by_group["random (expected)"][grp] = statistics.fmean(rows[k]["hw"] / best - 1 for k in keys)
+reg = {n: list(v.values()) for n, v in by_group.items()}
 for n, v in reg.items():
+    extra = ""
+    if "hipBLASLt Default" in by_group and n != "hipBLASLt Default":
+        common = [g for g in by_group[n] if g in by_group["hipBLASLt Default"]]
+        if common:
+            extra = (f"   <= Default in {sum(by_group[n][g] <= by_group['hipBLASLt Default'][g] + 1e-9 for g in common)}"
+                     f"/{len(common)}")
     print(f"  {n:28s} median {statistics.median(v):6.1%}   mean {statistics.fmean(v):6.1%}   "
-          f"worst {max(v):6.1%}   groups {len(v)}")
+          f"worst {max(v):6.1%}   groups {len(v)}{extra}")
+
+if args.regret_tests:
+    # Paired over groups: resample groups, mean of the per-group regret differences.
+    def paired(a, b):
+        gs = [g for g in by_group[a] if g in by_group[b]]
+        d = [by_group[a][g] - by_group[b][g] for g in gs]
+        boot = sorted(statistics.fmean(rng.choices(d, k=len(d))) for _ in range(4000))
+        return statistics.fmean(d), boot[100], boot[3899]
+    tested = DEFER or PRIMARY
+    print("\nREGRET TESTS (mean pick regret difference, paired bootstrap over groups; criterion: CI upper bound < 0)")
+    for other in ("hipBLASLt Default", f"REFERENCE ({args.ref_name})" if args.ref_emu else None):
+        if other and other in by_group:
+            m, lo, hi = paired(tested, other)
+            print(f"  {tested} minus {other}: {m:+.1%}  95% CI [{lo:+.1%}, {hi:+.1%}]: {'PASS' if hi < 0 else 'FAIL'}")
+
+if args.ref_emu:
+    # Both predictors on the same stable pairs: the difference is paired.
+    ref_name = f"REFERENCE ({args.ref_name})"
+    diffs = [p[1][PRIMARY] - p[1][ref_name] for p in pairs]
+    lo, hi = ci(diffs)
+    print(f"\nPAIRED: {PRIMARY} minus {ref_name}: {statistics.fmean(diffs):+.1%}  "
+          f"95% CI [{lo:+.1%}, {hi:+.1%}]: {'PASS' if lo > args.margin else 'FAIL'} "
+          f"(criterion: lower bound > {args.margin:+.1%})")
 
 print(f"\nPRE-REGISTERED CRITERIA ({PRIMARY})")
 best_base = max(("fewer instructions", "fewer DRAM bytes"), key=lambda n: acc[n][0])

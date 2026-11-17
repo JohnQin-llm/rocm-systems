@@ -66,9 +66,58 @@ SHAPES = {  # name: (m, n, k[, dtype]) -- dtype defaults to bfloat16
     "m1024_n2048_k768": (1024, 2048, 768),
     "m2_n1536_k6144_f16": (2, 1536, 6144, "float16"),
     "m512_n512_k2048_f16": (512, 512, 2048, "float16"),
+    # Held-out set 3 (PREREG-addendum-3.md): chosen before any of it was measured.
+    "m5_n5120_k4096": (5, 5120, 4096),
+    "m40_n2560_k2048": (40, 2560, 2048),
+    "m80_n6144_k1024": (80, 6144, 1024),
+    "m160_n1024_k4096": (160, 1024, 4096),
+    "m320_n3072_k768": (320, 3072, 768),
+    "m640_n640_k2560": (640, 640, 2560),
+    "m3_n3072_k3072_f16": (3, 3072, 3072, "float16"),
+    "m256_n1536_k1536_f16": (256, 1536, 1536, "float16"),
+    # Held-out set 4 (PREREG-addendum-4.md): chosen before any of it was measured.
+    "m6_n4096_k6144": (6, 4096, 6144),
+    "m12_n3072_k4096": (12, 3072, 4096),
+    "m48_n5120_k1536": (48, 5120, 1536),
+    "m112_n2048_k3072": (112, 2048, 3072),
+    "m224_n1024_k2048": (224, 1024, 2048),
+    "m448_n1792_k1024": (448, 1792, 1024),
+    "m1_n6144_k2048_f16": (1, 6144, 2048, "float16"),
+    "m192_n2304_k2304_f16": (192, 2304, 2304, "float16"),
+    # Held-out set 5 (PREREG-addendum-5.md): chosen before any of it was measured.
+    "m7_n3584_k5120": (7, 3584, 5120),
+    "m20_n7168_k2048": (20, 7168, 2048),
+    "m60_n4608_k1024": (60, 4608, 1024),
+    "m128_n2816_k2816": (128, 2816, 2816),
+    "m272_n1280_k3584": (272, 1280, 3584),
+    "m512_n1024_k1536": (512, 1024, 1536),
+    "m2_n5120_k5120_f16": (2, 5120, 5120, "float16"),
+    "m96_n3584_k2048_f16": (96, 3584, 2048, "float16"),
+    # Held-out set 6 (PREREG-addendum-6.md): chosen before any of it was measured.
+    "m9_n4608_k4608": (9, 4608, 4608),
+    "m16_n3072_k6144": (16, 3072, 6144),
+    "m36_n6656_k1536": (36, 6656, 1536),
+    "m72_n2560_k3072": (72, 2560, 3072),
+    "m144_n4096_k1024": (144, 4096, 1024),
+    "m208_n1536_k2560": (208, 1536, 2560),
+    "m384_n2048_k1536": (384, 2048, 1536),
+    "m768_n1280_k1024": (768, 1280, 1024),
+    "m4_n7168_k3584_f16": (4, 7168, 3584, "float16"),
+    "m24_n2048_k8192_f16": (24, 2048, 8192, "float16"),
+    "m160_n3584_k1792_f16": (160, 3584, 1792, "float16"),
+    "m1024_n768_k2048_f16": (1024, 768, 2048, "float16"),
 }
 HELDOUT_GEMM = ["m2_n4096_k4096", "m4_n2048_k8192", "m48_n3072_k1024", "m96_n1536_k2048",
                 "m768_n768_k768", "m1536_n512_k1024", "m1_n2048_k4096_f16", "m128_n4096_k512_f16"]
+HELDOUT6_GEMM = ["m9_n4608_k4608", "m16_n3072_k6144", "m36_n6656_k1536", "m72_n2560_k3072", "m144_n4096_k1024",
+                 "m208_n1536_k2560", "m384_n2048_k1536", "m768_n1280_k1024", "m4_n7168_k3584_f16",
+                 "m24_n2048_k8192_f16", "m160_n3584_k1792_f16", "m1024_n768_k2048_f16"]
+HELDOUT5_GEMM = ["m7_n3584_k5120", "m20_n7168_k2048", "m60_n4608_k1024", "m128_n2816_k2816",
+                 "m272_n1280_k3584", "m512_n1024_k1536", "m2_n5120_k5120_f16", "m96_n3584_k2048_f16"]
+HELDOUT4_GEMM = ["m6_n4096_k6144", "m12_n3072_k4096", "m48_n5120_k1536", "m112_n2048_k3072",
+                 "m224_n1024_k2048", "m448_n1792_k1024", "m1_n6144_k2048_f16", "m192_n2304_k2304_f16"]
+HELDOUT3_GEMM = ["m5_n5120_k4096", "m40_n2560_k2048", "m80_n6144_k1024", "m160_n1024_k4096",
+                 "m320_n3072_k768", "m640_n640_k2560", "m3_n3072_k3072_f16", "m256_n1536_k1536_f16"]
 HELDOUT2_GEMM = ["m3_n6144_k4096", "m24_n4096_k2048", "m64_n1024_k8192", "m192_n2560_k1536",
                  "m384_n1024_k3072", "m1024_n2048_k768", "m2_n1536_k6144_f16", "m512_n512_k2048_f16"]
 
@@ -107,6 +156,10 @@ def enumerate_cmd(args):
             guard = [sys.executable, str(TOOLS / "gpu_guard.py"), "run", "--hip",
                      str(args.hip), "--record", str(work / f"tune_{shape}.guard.json"), "--"]
             for _ in range(5):
+                # A results file left by an earlier attempt would be loaded instead of
+                # tuned, and its log would list no timed candidates.
+                for stale in work.glob(f"tune_{shape}*.csv"):
+                    stale.unlink()
                 with open(log, "w") as fh:
                     subprocess.run(guard + [sys.executable, "-c", code], env=env, stdout=fh,
                                    stderr=subprocess.STDOUT, check=False)

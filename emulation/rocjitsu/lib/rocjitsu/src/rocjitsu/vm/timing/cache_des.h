@@ -20,10 +20,23 @@ namespace rocjitsu::timing {
 ///        functional simulator and the timing plane never reads it.
 class TagArray {
 public:
+  /// @brief No line: what access() reports when its replacement wrote nothing back.
+  static constexpr std::uint64_t kNoLine = ~0ULL;
+
   void configure(std::uint64_t sets, std::uint64_t ways, std::uint64_t line_bytes);
   /// @brief Probe and allocate, replacing least recently used.
+  /// @param write The access is a store: the line is dirty from now on.
+  /// @param cold Allocate a missing line as least recently used rather than most,
+  ///        and leave a hit's recency alone. A streaming access does this so its
+  ///        lines are the first to go and do not displace the working set.
+  /// @param dirty_victim Set to the byte address of a dirty line the allocation
+  ///        replaced, which now has to be written back; kNoLine when none was.
   /// @returns true when the line was already resident.
-  bool access(std::uint64_t byte_address, std::uint64_t stamp);
+  bool access(std::uint64_t byte_address, std::uint64_t stamp, bool write = false,
+              bool cold = false, std::uint64_t *dirty_victim = nullptr);
+  /// @brief Write back every dirty line: mark it clean and report it.
+  /// @returns How many lines were dirty.
+  std::uint64_t flush();
   void invalidate();
   std::uint64_t line_bytes() const { return line_bytes_; }
   std::uint64_t line_shift() const { return line_shift_; }
@@ -36,6 +49,7 @@ private:
   std::uint64_t line_shift_ = 6;
   std::vector<std::uint64_t> tags_;
   std::vector<std::uint64_t> stamps_;
+  std::vector<std::uint8_t> dirty_;
   static constexpr std::uint64_t kEmpty = ~0ULL;
 };
 
@@ -66,12 +80,19 @@ public:
   std::uint64_t advance(std::uint64_t now) override;
 
   void invalidate();
+  /// @brief Write back every dirty line, as a release at the end of a kernel
+  ///        does. Nothing is sent downstream: the caller costs the flush.
+  /// @returns The bytes written back.
+  std::uint64_t flush() { return tags_.flush() * tags_.line_bytes(); }
 
   std::uint64_t hits() const { return hits_.load(std::memory_order_relaxed); }
   std::uint64_t misses() const { return misses_.load(std::memory_order_relaxed); }
   std::uint64_t bytes() const { return bytes_.load(std::memory_order_relaxed); }
 
 private:
+  /// @brief Send the dirty lines @p cause displaced to the level below.
+  void write_back(const MemoryRequest &cause);
+
   const CacheTuning &tuning_;
   std::vector<std::uint64_t> *line_pool_;
   TagArray tags_;
@@ -79,6 +100,8 @@ private:
   Completion completion_;
   bool allocates_ = true;
   std::uint64_t stamp_ = 1;
+  /// @brief Dirty lines one request's allocations displaced; reused.
+  std::vector<std::uint64_t> victims_;
   std::atomic<std::uint64_t> hits_{0};
   std::atomic<std::uint64_t> misses_{0};
   std::atomic<std::uint64_t> bytes_{0};

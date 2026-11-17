@@ -46,9 +46,13 @@ void TagArray::configure(std::uint64_t sets, std::uint64_t ways, std::uint64_t l
   set_mask_ = sets_ - 1;
   tags_.assign(static_cast<std::size_t>(sets_ * ways_), kEmpty);
   stamps_.assign(static_cast<std::size_t>(sets_ * ways_), 0);
+  dirty_.assign(static_cast<std::size_t>(sets_ * ways_), 0);
 }
 
-bool TagArray::access(std::uint64_t byte_address, std::uint64_t stamp) {
+bool TagArray::access(std::uint64_t byte_address, std::uint64_t stamp, bool write, bool cold,
+                      std::uint64_t *dirty_victim) {
+  if (dirty_victim != nullptr)
+    *dirty_victim = kNoLine;
   if (ways_ == 0 || tags_.empty())
     return false;
   const std::uint64_t line = byte_address >> line_shift_;
@@ -63,7 +67,10 @@ bool TagArray::access(std::uint64_t byte_address, std::uint64_t stamp) {
   for (std::uint64_t way = 0; way < ways_; ++way) {
     const std::size_t slot = base + static_cast<std::size_t>(way);
     if (tags_[slot] == line) {
-      stamps_[slot] = stamp;
+      if (!cold)
+        stamps_[slot] = stamp;
+      if (write)
+        dirty_[slot] = 1;
       return true;
     }
     // An empty way is always the victim; otherwise the least recently used one.
@@ -73,12 +80,29 @@ bool TagArray::access(std::uint64_t byte_address, std::uint64_t stamp) {
       victim = slot;
     }
   }
+  if (dirty_[victim] != 0 && tags_[victim] != kEmpty && dirty_victim != nullptr)
+    *dirty_victim = tags_[victim] << line_shift_;
   tags_[victim] = line;
-  stamps_[victim] = stamp;
+  // Age zero is what an empty way has: the next allocation in the set takes it.
+  stamps_[victim] = cold ? 0 : stamp;
+  dirty_[victim] = write ? 1 : 0;
   return false;
 }
 
-void TagArray::invalidate() { std::fill(tags_.begin(), tags_.end(), kEmpty); }
+std::uint64_t TagArray::flush() {
+  std::uint64_t written = 0;
+  for (std::size_t slot = 0; slot < dirty_.size(); ++slot) {
+    if (dirty_[slot] != 0 && tags_[slot] != kEmpty)
+      ++written;
+    dirty_[slot] = 0;
+  }
+  return written;
+}
+
+void TagArray::invalidate() {
+  std::fill(tags_.begin(), tags_.end(), kEmpty);
+  std::fill(dirty_.begin(), dirty_.end(), 0);
+}
 
 // -- CacheDes ---------------------------------------------------------------
 
@@ -89,6 +113,28 @@ CacheDes::CacheDes(std::string name, const simdojo::ClockDomain &domain, TimingE
 }
 
 void CacheDes::invalidate() { tags_.invalidate(); }
+
+void CacheDes::write_back(const MemoryRequest &cause) {
+  if (victims_.empty() || line_pool_ == nullptr || !downstream_) {
+    victims_.clear();
+    return;
+  }
+  // Nothing waits for a write-back, so it carries a sequence no access can
+  // have: it occupies the levels below like any other traffic, and its
+  // completion is ignored.
+  MemoryRequest out;
+  out.origin = RequestOrigin{cause.origin.compute_unit, cause.origin.wave_slot, kWriteBackSequence};
+  out.line_base = static_cast<std::uint32_t>(line_pool_->size());
+  out.line_count = static_cast<std::uint32_t>(victims_.size());
+  out.line_bytes = static_cast<std::uint32_t>(tags_.line_bytes());
+  out.is_load = false;
+  out.space = MemorySpace::Global;
+  out.issued_tick = cause.issued_tick;
+  out.depth = cause.depth == 0xFFu ? 0xFFu : static_cast<std::uint8_t>(cause.depth + 1);
+  line_pool_->insert(line_pool_->end(), victims_.begin(), victims_.end());
+  victims_.clear();
+  downstream_(out);
+}
 
 std::uint64_t CacheDes::advance(std::uint64_t now) {
   if (inbox().empty())
@@ -130,7 +176,22 @@ std::uint64_t CacheDes::advance(std::uint64_t now) {
     // does not have. The tag array is left entirely alone rather than probed
     // and then ignored, so the access also does not evict a line a temporal
     // access is still using.
-    const bool probe = allocates_ || !request.non_temporal;
+    //
+    // Stores follow the level's write policy. A write-through level (the first
+    // level on this part) passes every store on and keeps no copy: probing would
+    // let a store that hits end here, and the write would never reach the level
+    // that has to hold it. A write-back level (the second) ends the store: the
+    // line is allocated dirty without being read, and the bytes reach memory only
+    // when the line is evicted or a release flushes it -- which is what makes
+    // where and when the writes happen depend on the instruction's policy. A
+    // non-temporal store is still written back, but allocated as least recently
+    // used, so it leaves early and in step with the kernel rather than at its
+    // end; a write-through store (system scope) passes this level as well.
+    const bool store = !request.is_load && !request.instruction_fetch;
+    const bool passes = store && (tuning_.write_through || request.write_through);
+    const bool absorbs = store && tuning_.write_back && !passes;
+    const bool probe = !passes && (allocates_ || !request.non_temporal || absorbs);
+    const bool cold = absorbs && request.non_temporal;
 
     // Partition the request's slice of the line pool in place: misses to the
     // front, hits behind them. The two halves are disjoint ranges of the pool,
@@ -139,19 +200,32 @@ std::uint64_t CacheDes::advance(std::uint64_t now) {
     // names a pool range instead of carrying its own vector: a wave64 access is
     // up to sixty-four lines, and a hierarchy that allocated per split would
     // spend more time in the allocator than the emulator spends executing.
+    // A store this level absorbs is answered here whether or not its line was
+    // resident, so it stays in the completed half and only counts as a miss.
+    victims_.clear();
     std::uint32_t missed = 0;
+    std::uint32_t allocated = 0;
     for (std::uint32_t index = 0; index < request.line_count; ++index) {
       const std::uint64_t address = lines[index];
-      if (probe && tags_.access(address, stamp_++))
+      std::uint64_t victim = TagArray::kNoLine;
+      const bool hit = probe && tags_.access(address, stamp_++, absorbs, cold,
+                                             tuning_.write_back ? &victim : nullptr);
+      if (victim != TagArray::kNoLine)
+        victims_.push_back(victim);
+      if (hit)
         continue;
+      if (absorbs) {
+        ++allocated;
+        continue;
+      }
       lines[index] = lines[missed];
       lines[missed] = address;
       ++missed;
     }
     const std::uint32_t hit_lines = request.line_count - missed;
 
-    hits_.fetch_add(hit_lines, std::memory_order_relaxed);
-    misses_.fetch_add(missed, std::memory_order_relaxed);
+    hits_.fetch_add(hit_lines - allocated, std::memory_order_relaxed);
+    misses_.fetch_add(missed + allocated, std::memory_order_relaxed);
     // Every line the request presented crossed this level, whether it hit or
     // was filled through it. Charging only the hits would make a cache that
     // misses everything look like a cache that is doing nothing, when it is in
@@ -196,33 +270,35 @@ std::uint64_t CacheDes::advance(std::uint64_t now) {
       completion_(hit, ready);
     }
 
-    if (missed == 0)
-      continue;
+    if (missed != 0) {
+      MemoryRequest miss = request;
+      miss.line_count = missed;
+      miss.depth = request.depth == 0xFFu ? 0xFFu : static_cast<std::uint8_t>(request.depth + 1);
 
-    MemoryRequest miss = request;
-    miss.line_count = missed;
-    miss.depth = request.depth == 0xFFu ? 0xFFu : static_cast<std::uint8_t>(request.depth + 1);
-
-    if (downstream_) {
-      // Handed over at the current tick rather than at `done`. A request
-      // carries no arrival stamp -- `issued_tick` is its entry into the
-      // hierarchy, which a completion needs to report the latency the
-      // wavefront actually saw -- so the hand-off cannot be dated later without
-      // destroying that. The downstream therefore starts up to this level's own
-      // streaming time early, which is bounded by the request's line count over
-      // `lines_per_cycle` and is small beside the round trip it is starting.
-      downstream_(miss);
-      continue;
+      if (downstream_) {
+        // Handed over at the current tick rather than at `done`. A request
+        // carries no arrival stamp -- `issued_tick` is its entry into the
+        // hierarchy, which a completion needs to report the latency the
+        // wavefront actually saw -- so the hand-off cannot be dated later
+        // without destroying that. The downstream therefore starts up to this
+        // level's own streaming time early, which is bounded by the request's
+        // line count over `lines_per_cycle` and is small beside the round trip
+        // it is starting.
+        downstream_(miss);
+      } else if (completion_) {
+        // No downstream: this level is the bottom of the configured hierarchy,
+        // and the lines it just missed have nowhere to go. Complete them here
+        // rather than dropping them. A dropped request never retires its wait
+        // counter and the wavefront that issued it waits forever, which turns a
+        // configuration mistake into a hang; costing it as a hit is wrong by a
+        // latency and says so in the miss counter.
+        completion_(miss, ready);
+      }
     }
 
-    // No downstream: this level is the bottom of the configured hierarchy, and
-    // the lines it just missed have nowhere to go. Complete them here rather
-    // than dropping them. A dropped request never retires its wait counter and
-    // the wavefront that issued it waits forever, which turns a configuration
-    // mistake into a hang; costing it as a hit is wrong by a latency and says
-    // so in the miss counter.
-    if (completion_)
-      completion_(miss, ready);
+    // After the request's own miss, so a read it is waiting for is not queued
+    // behind the lines its fills displaced.
+    write_back(request);
   }
 
   inbox().erase(inbox().begin(), inbox().begin() + static_cast<std::ptrdiff_t>(queued));

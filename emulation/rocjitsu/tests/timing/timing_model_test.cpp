@@ -298,6 +298,45 @@ TEST(TimingCache, InvalidateLosesEverything) {
   EXPECT_FALSE(tags.access(0x0000, 3));
 }
 
+TEST(TimingCache, ADirtyLineIsWrittenBackWhenEvictedAndACleanOneIsNot) {
+  TagArray tags;
+  tags.configure(1, 2, 64);
+  std::uint64_t victim = 0;
+  tags.access(0x000, 1, /*write=*/true, /*cold=*/false, &victim);
+  EXPECT_EQ(victim, TagArray::kNoLine) << "nothing was resident to displace";
+  tags.access(0x040, 2, /*write=*/false, /*cold=*/false, &victim);
+  EXPECT_EQ(victim, TagArray::kNoLine);
+  tags.access(0x080, 3, /*write=*/false, /*cold=*/false, &victim);
+  EXPECT_EQ(victim, 0x000u) << "the stored line leaves dirty";
+  tags.access(0x0C0, 4, /*write=*/false, /*cold=*/false, &victim);
+  EXPECT_EQ(victim, TagArray::kNoLine) << "a line that was only read leaves silently";
+}
+
+TEST(TimingCache, AFlushWritesBackEachDirtyLineOnceAndKeepsItResident) {
+  TagArray tags;
+  tags.configure(4, 4, 64);
+  tags.access(0x000, 1, /*write=*/true);
+  tags.access(0x040, 2, /*write=*/true);
+  tags.access(0x080, 3, /*write=*/false);
+  EXPECT_EQ(tags.flush(), 2u);
+  EXPECT_EQ(tags.flush(), 0u) << "a flushed line is clean";
+  EXPECT_TRUE(tags.access(0x000, 4)) << "and still resident";
+}
+
+TEST(TimingCache, AColdLineIsTheNextToGo) {
+  // A streaming store's line is allocated as least recently used: it is the
+  // one displaced next, written back early, and the temporal line it shares a
+  // set with survives.
+  TagArray tags;
+  tags.configure(1, 2, 64);
+  std::uint64_t victim = 0;
+  tags.access(0x000, 1);
+  tags.access(0x040, 2, /*write=*/true, /*cold=*/true);
+  tags.access(0x080, 3, /*write=*/false, /*cold=*/false, &victim);
+  EXPECT_EQ(victim, 0x040u);
+  EXPECT_TRUE(tags.access(0x000, 4));
+}
+
 // -- Composition -------------------------------------------------------------
 
 TEST(TimingDispatch, SameInputGivesTheSameAnswer) {

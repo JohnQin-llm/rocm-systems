@@ -19,6 +19,7 @@ from pathlib import Path
 TOOLS = Path(__file__).resolve().parent                        # this directory
 ROOT = TOOLS.parents[2]                                          # emulation/rocjitsu
 BIN = os.environ.get("ROCJITSU_BIN", str(ROOT / "build/tools/rocjitsu/rocjitsu"))
+CFG = os.environ.get("ROCJITSU_CONFIG", str(ROOT / "configs/gfx950_mi355x_kmd_timing.json"))
 cases = json.loads(subprocess.run([sys.executable, str(TOOLS / "triton_bench.py"), "list"],
                                   capture_output=True, text=True, check=True).stdout)
 jobs = [(c, v) for c, vs in cases.items() for v in vs]
@@ -63,7 +64,7 @@ def emu_one(job):
     raw, trace, log = (out_root / f"{case}__{var}.{x}" for x in ("raw.json", "trace.jsonl", "log"))
     start = time.time()
     cmd = ["timeout", "--kill-after=30", "7200", BIN, "--config",
-           str(ROOT / "configs/gfx950_mi355x_kmd_timing.json"), "--"] + tb(case, var, "emu", raw)
+           CFG, "--"] + tb(case, var, "emu", raw)
     with open(log, "w") as fh:
         rc = subprocess.run(cmd, env=dict(os.environ, ROCJITSU_TIMING_TRACE=str(trace)), stdout=fh,
                             stderr=subprocess.STDOUT).returncode
