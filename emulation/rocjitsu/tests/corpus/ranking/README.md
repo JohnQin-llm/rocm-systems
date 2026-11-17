@@ -1,5 +1,7 @@
 # Variant-ranking benchmark for the timing model
 
+For the design of the timing model, how it is calibrated and what the evidence says it can and cannot do, see [docs/timing-variant-ranking.md](../../../docs/timing-variant-ranking.md).
+
 Does the timing model, run without a GPU, order alternative implementations of
 one operation the way MI355X hardware does? Two benchmarks:
 
