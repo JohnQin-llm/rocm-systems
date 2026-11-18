@@ -20,14 +20,15 @@ TOOLS = Path(__file__).resolve().parent                        # this directory
 ROOT = TOOLS.parents[2]                                          # emulation/rocjitsu
 BIN = os.environ.get("ROCJITSU_BIN", str(ROOT / "build/tools/rocjitsu/rocjitsu"))
 CFG = os.environ.get("ROCJITSU_CONFIG", str(ROOT / "configs/gfx950_mi355x_kmd_timing.json"))
-cases = json.loads(subprocess.run([sys.executable, str(TOOLS / "triton_bench.py"), "list"],
+BENCH = TOOLS / os.environ.get("RANKING_BENCH", "triton_bench.py")          # or kernel_families.py
+cases = json.loads(subprocess.run([sys.executable, str(BENCH), "list"],
                                   capture_output=True, text=True, check=True).stdout)
 jobs = [(c, v) for c, vs in cases.items() for v in vs]
 mode, out_root = sys.argv[1], Path(sys.argv[2])
 
 
 def tb(case, variant, m, out):
-    return [sys.executable, str(TOOLS / "triton_bench.py"), "time", "--case", case, "--variant", variant,
+    return [sys.executable, str(BENCH), "time", "--case", case, "--variant", variant,
             "--mode", m, "--out", str(out)] + (["--warmup", "1", "--samples", "3"] if m == "emu" else [])
 
 
