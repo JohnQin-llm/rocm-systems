@@ -105,11 +105,12 @@ def cases():
 
 
 def build(case, variant):
-    g = torch.Generator(device="cuda").manual_seed(0)
+    # Inputs and references on the host, as in triton_bench.build().
+    g = torch.Generator().manual_seed(0)
     v = parse(variant)
     if case in ATTN_SHAPES:
         b, h, s, d, causal = ATTN_SHAPES[case]
-        q, k, vv = (torch.randn(b, h, s, d, device="cuda", dtype=torch.bfloat16, generator=g) for _ in range(3))
+        q, k, vv = (torch.randn(b, h, s, d, dtype=torch.bfloat16, generator=g).cuda() for _ in range(3))
         o = torch.empty_like(q)
         grid = (s // v["m"], b * h)
 
@@ -118,15 +119,16 @@ def build(case, variant):
                                          CAUSAL=causal, num_warps=v["w"], num_stages=v["s"])
 
         def err():
-            sc = (q.float() @ k.float().transpose(-1, -2)) * d ** -0.5
+            qc, kc, vc = q.cpu().float(), k.cpu().float(), vv.cpu().float()
+            sc = (qc @ kc.transpose(-1, -2)) * d ** -0.5
             if causal:
-                sc = sc.masked_fill(torch.ones(s, s, device="cuda", dtype=torch.bool).triu(1), float("-inf"))
-            return (o.float() - torch.softmax(sc, -1) @ vv.float()).abs().max().item()
+                sc = sc.masked_fill(torch.ones(s, s, dtype=torch.bool).triu(1), float("-inf"))
+            return (o.cpu().float() - torch.softmax(sc, -1) @ vc).abs().max().item()
         return fn, err
     if case in RMS_SHAPES:
         rows, cols = RMS_SHAPES[case]
-        x = torch.randn(rows, cols, device="cuda", dtype=torch.bfloat16, generator=g)
-        w = torch.randn(cols, device="cuda", dtype=torch.bfloat16, generator=g)
+        x = torch.randn(rows, cols, dtype=torch.bfloat16, generator=g).cuda()
+        w = torch.randn(cols, dtype=torch.bfloat16, generator=g).cuda()
         y = torch.empty_like(x)
         grid = (triton.cdiv(rows, v["r"]),)
 
@@ -135,14 +137,14 @@ def build(case, variant):
                                         BLOCK=triton.next_power_of_2(cols), num_warps=v["w"])
 
         def err():
-            xf = x.float()
-            ref = xf * torch.rsqrt(xf.pow(2).mean(-1, keepdim=True) + 1e-6) * w.float()
-            return ((y.float() - ref).abs().max() / ref.abs().max()).item()
+            xf = x.cpu().float()
+            ref = xf * torch.rsqrt(xf.pow(2).mean(-1, keepdim=True) + 1e-6) * w.cpu().float()
+            return ((y.cpu().float() - ref).abs().max() / ref.abs().max()).item()
         return fn, err
     m, n, k = F8_SHAPES[case]
     f8 = torch.float8_e4m3fn
-    a = (torch.randn(m, k, device="cuda", generator=g) / 4).to(f8)
-    bt = (torch.randn(k, n, device="cuda", generator=g) / 4).to(f8)
+    a = (torch.randn(m, k, generator=g) / 4).to(f8).cuda()
+    bt = (torch.randn(k, n, generator=g) / 4).to(f8).cuda()
     c = torch.empty(m, n, device="cuda", dtype=torch.bfloat16)
     grid = (triton.cdiv(m, v["m"]) * triton.cdiv(n, v["n"]),)
 
@@ -152,8 +154,8 @@ def build(case, variant):
                                    GROUP_M=8, num_warps=v["w"], num_stages=v["s"])
 
     def err():
-        ref = a.float() @ bt.float()
-        return ((c.float() - ref).abs().max() / ref.abs().max()).item()
+        ref = a.cpu().float() @ bt.cpu().float()
+        return ((c.cpu().float() - ref).abs().max() / ref.abs().max()).item()
     return fn, err
 
 

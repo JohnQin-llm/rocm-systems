@@ -257,9 +257,11 @@ inline std::uint64_t lds_granule_cycles(std::span<const std::uint64_t> addresses
   constexpr std::size_t kBankSlots = 256;
   std::uint16_t multiplicity[kBankSlots];
   std::memset(multiplicity, 0, sizeof(multiplicity));
+  // Lanes inside one granule are served together, as a broadcast: two halves of
+  // a dword written by ds_write_b16 from neighbouring lanes are not a conflict.
   LaneSet distinct;
   for (std::uint64_t address : addresses)
-    distinct.insert(address);
+    distinct.insert(address / granule * granule);
   std::uint64_t ways = 1;
   for (std::uint64_t address : distinct)
     for (std::uint64_t piece = 0; piece < pieces; ++piece) {

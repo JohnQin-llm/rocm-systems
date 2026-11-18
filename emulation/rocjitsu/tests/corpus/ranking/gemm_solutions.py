@@ -130,10 +130,13 @@ def shape_of(name):
 def tensors(shape):
     import torch
     m, n, k, dtype = shape_of(shape)
-    g = torch.Generator(device="cuda").manual_seed(0)
+    # Generated on the host and copied over: under the emulator a device-side
+    # randn is itself emulated and costs seconds per item, and timing does not
+    # depend on the values.
+    g = torch.Generator().manual_seed(0)
     dt = getattr(torch, dtype)
-    a = torch.randn(m, k, device="cuda", dtype=dt, generator=g)
-    b = torch.randn(k, n, device="cuda", dtype=dt, generator=g)
+    a = torch.randn(m, k, dtype=dt, generator=g).cuda()
+    b = torch.randn(k, n, dtype=dt, generator=g).cuda()
     return a, b
 
 

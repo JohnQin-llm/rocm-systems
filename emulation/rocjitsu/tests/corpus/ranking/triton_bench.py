@@ -148,12 +148,14 @@ def parse(variant):
 
 
 def build(case, variant):
-    g = torch.Generator(device="cuda").manual_seed(0)
+    # Inputs on the host and the reference on the host: under the emulator both
+    # are emulated device work and cost more than the kernel being timed.
+    g = torch.Generator().manual_seed(0)
     v = parse(variant)
     if case in MATMUL_SHAPES:
         m, n, k = MATMUL_SHAPES[case]
-        a = torch.randn(m, k, device="cuda", dtype=torch.bfloat16, generator=g)
-        b = torch.randn(k, n, device="cuda", dtype=torch.bfloat16, generator=g)
+        a = torch.randn(m, k, dtype=torch.bfloat16, generator=g).cuda()
+        b = torch.randn(k, n, dtype=torch.bfloat16, generator=g).cuda()
         c = torch.empty(m, n, device="cuda", dtype=torch.bfloat16)
         grid = (triton.cdiv(m, v["m"]) * triton.cdiv(n, v["n"]),)
 
@@ -163,10 +165,11 @@ def build(case, variant):
                                        BLOCK_K=v["k"], GROUP_M=8, num_warps=v["w"], num_stages=v["s"])
 
         def err():
-            return (c.float() - (a.float() @ b.float())).abs().max().item() / max(1.0, (a.float() @ b.float()).abs().max().item())
+            ref = a.cpu().float() @ b.cpu().float()
+            return (c.cpu().float() - ref).abs().max().item() / max(1.0, ref.abs().max().item())
         return fn, err
     rows, cols = SOFTMAX_SHAPES[case]
-    x = torch.randn(rows, cols, device="cuda", dtype=torch.bfloat16, generator=g)
+    x = torch.randn(rows, cols, dtype=torch.bfloat16, generator=g).cuda()
     y = torch.empty_like(x)
     block = triton.next_power_of_2(cols)
     grid = (triton.cdiv(rows, v["r"]),)
@@ -178,7 +181,7 @@ def build(case, variant):
         return softmax_kernel[grid](y, x, rows, cols, x.stride(0), ROWS=v["r"], BLOCK=block, num_warps=v["w"])
 
     def err():
-        return (y.float() - torch.softmax(x.float(), dim=1)).abs().max().item()
+        return (y.cpu().float() - torch.softmax(x.cpu().float(), dim=1)).abs().max().item()
     return fn, err
 
 
