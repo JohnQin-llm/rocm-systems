@@ -69,55 +69,155 @@ This project adds a **calibrated, validated timing model** on top of it, to answ
 
 ## 🔬 How it works
 
-### 1. Functional emulation decides *what* happens
+### The idea in one paragraph
 
-The emulator runs the **compiled binary**, not the source. The timing plane therefore sees:
+Ranking asks much less of a timing model than absolute time does. Variants of one operation run on the same machine, on the same data, through the same launch path. Most of the errors of a timing model (clock behaviour, launch overhead, how efficiently DRAM is used) are therefore shared by all of them, and they cancel when two predictions are compared.
 
-- the code Triton actually generated and the hipBLASLt solution actually chosen;
-- cache-modifier bits (`sc0 / sc1 / nt`);
-- the real address of every lane.
+What *separates* variants is a short list of things:
 
-### 2. An event-driven timing plane decides *how long*
+- how many instructions they issue, and to which units;
+- how many bytes each cache level has to move, and on which instance;
+- how many wavefronts fit on a CU to hide latency;
+- whether their stores leave dirty lines behind.
 
-- **One request per memory instruction, not per cache line.** Each cache level splits a request into hits and misses, and only the misses travel on, which keeps the event count tractable.
-- **CU side:** issue ports, a register scoreboard, and `s_waitcnt` counters.
-- **Memory side:** occupancy (bandwidth) and hit latency at every level, with a row-buffer model in DRAM.
-- **Placement:** timed CUs map one-to-one onto functional XCD/CU slots, and L2s are per XCD.
+The emulator runs the real compiled binary, so it observes all of these exactly. The timing model only has to weigh them against each other correctly. Where variants differ in something the model does not represent, the errors stop cancelling, and that is where it misses ([example 2](#2-where-it-misses)).
 
-### 3. Composition turns terms into cycles per dispatch
+### From program to ranking, step by step
+
+| # | step | what happens | output |
+|---|---|---|---|
+| 1 | **Run** | The unmodified program runs under rocjitsu. An emulated kernel driver hands every kernel launch to the functional VM, which executes the GPU binary on the CPU. | correct results |
+| 2 | **Observe** | The functional VM reports each instruction it retires to the timing plane: its class (vector ALU, MFMA, LDS, scalar, vector memory, barrier, `s_waitcnt`, …), the registers it reads and writes, and, for memory instructions, the address of every lane and the cache-policy bits. | instruction stream |
+| 3 | **Time each wavefront** | A per-wavefront clock advances through issue ports and stops at `s_waitcnt` until data arrives ([§2](#2-timing-one-wavefront)). | issue work, stalls, critical paths |
+| 4 | **Time each memory access** | The request walks L1 → L2 → fabric → MALL → HBM; each level has tags, a latency and a queue ([§3](#3-timing-one-memory-access)). | completion times, bytes per level |
+| 5 | **Compose** | At the end of the dispatch the terms are combined into cycles and written to the trace ([§4](#4-from-events-to-one-number-per-dispatch)). | one trace line per dispatch |
+| 6 | **Calibrate** | `recompose(terms, knobs)` reapplies the composition offline with fitted multipliers ([§6](#6-calibration-why-two-stages)). | predicted µs |
+| 7 | **Rank** | Take the geometric mean over 5 knob sets, on warm calls only, and sort. | ranking and pick |
+
+### 1. Functional and timing are separate
+
+The functional VM decides **what** happens: values, branches, addresses. The timing plane decides only **how long** it takes, and nothing it computes flows back into the program. Two consequences follow:
+
+- A wrong timing estimate can never produce a wrong result. The timing plane also needs no data: its caches hold tags only.
+- Timing sees the code that really runs:
+  - the instructions Triton generated;
+  - the hipBLASLt solution that was actually chosen;
+  - the `sc0 / sc1 / nt` bits of each store;
+  - the real address of every lane.
+
+### 2. Timing one wavefront
+
+<p align="center"><img src="images/timing-ranking/wavefront-timeline.svg" alt="Life of a wavefront" width="100%"></p>
+
+Every wavefront has its own cycle counter.
+
+- **Ordinary instruction.** It waits until its source registers are ready (a register scoreboard). It then takes a slot on the issue port of its unit (vector ALU, matrix, LDS, scalar, vector memory, …) and advances the counter by its issue cost. When several wavefronts of one CU use the same port, they queue for it.
+- **Memory instruction.** The addresses of the lanes are coalesced into the cache lines they touch and sent as **one request**. The wavefront does **not** wait for it. Like the hardware, it keeps issuing independent instructions.
+- **`s_waitcnt`.** If the data it waits for has not arrived, the counter jumps forward to the arrival time. That jump is a **stall**.
+
+Each wavefront ends with a **critical path**: its issue time plus its stalls. Each CU ends with the **work queued on each of its ports**. These two numbers become the latency and issue terms.
+
+### 3. Timing one memory access
+
+- **Hits and misses.** Each level looks the lines of the request up in a set-associative tag array (LRU, hashed set index). Hits are answered at that level, and only the misses go on to the next one.
+- **Latency.** A level answers once two conditions hold:
+  - the hit latency of the level has passed since the request was issued;
+  - it has worked through the requests queued ahead of this one.
+
+  An access therefore costs its unloaded latency plus congestion, and nothing else.
+- **Bytes.** Every line that crosses a level is charged to the instance that served it:
+  - L1: per CU;
+  - L2: per XCD;
+  - fabric, MALL and HBM: per memory channel, with a 64 B interleave.
+
+  The busiest instance later sets the bandwidth term. Traffic that hashes onto a few channels is therefore slower than the same traffic spread out.
+- **Placement decides which L2.** Workgroup `wg` runs on XCD `wg % 8`, and each XCD has its own L2. Tiles that share data and sit on one XCD hit in one L2. Spread across XCDs, each XCD fetches its own copy over the fabric.
+- **Stores follow their policy bits.**
+  - A plain store allocates a dirty line in L2. The line is written back when it is evicted, or at the end of the kernel.
+  - A `.cs` (streaming) store is allocated least-recently-used. It is evicted, and so written back, while the kernel is still running.
+  - A `.wt` (write-through) store passes L1 and L2. The MALL absorbs it during the kernel.
+
+### 4. From events to one number per dispatch
 
 ```
-cycles = fixed
-       + max( issue , bandwidth , placement )
-       + latency
-       + filling
-       + flush
+cycles = fixed + max(issue, bandwidth, placement) + latency + filling + flush
 ```
 
-| term | meaning |
-|---|---|
-| `fixed` | launch, invalidate and end costs |
-| `issue` | busiest CU issue work, port- and occupancy-aware |
-| `bandwidth` | busiest instance of any level: busiest(bytes) / rate |
-| `placement` | command-processor workgroup placement rate |
-| `latency` | critical path minus what other resident waves hide, times rounds |
-| `filling` | ramp from an empty machine to steady state |
-| `flush` | release write-back of dirty L2 lines, serial, at the slower of fabric / MALL |
+Why this shape:
 
-### 4. Two-stage calibration
+- **Issue, bandwidth and placement are throughput limits.** The GPU works against all three at the same time, so the slowest one sets the pace and the other two overlap with it. Hence the `max`.
+- **Latency is what that throughput cannot hide.** It adds on top.
+- **The release flush can only start after the last wavefront.** It adds too.
+
+| term | what it measures | large when |
+|---|---|---|
+| `fixed` | launch, cache invalidate, end of kernel | always present (about 1.2–1.4 µs) |
+| `issue` | the most loaded issue port of the busiest CU, with each unit weighted | many instructions per CU; MFMA- or LDS-heavy code |
+| `bandwidth` | bytes on the busiest instance of any level ÷ the rate of that level | data movement dominates, or traffic piles onto one L2 or channel |
+| `placement` | how fast the command processor can launch workgroups | huge grids of tiny workgroups |
+| `latency` | exposed stall time of the worst CU (below) | few wavefronts per CU; long chains of dependent loads |
+| `filling` | the ramp from an idle machine to every CU busy | always small; matters only for short kernels |
+| `flush` | dirty L2 lines written back after the last wavefront, at the slower of fabric and MALL | plain stores still sitting in L2 at the end |
+
+The latency term follows the timeline above. While one wavefront stalls, the other resident wavefronts on its CU issue their own work:
+
+```
+hidden  = (resident − 1) × issue work per wavefront
+exposed = max(critical path − hidden, stall / stall_overlap)
+latency = exposed × ⌈wavefronts on the CU / resident⌉
+```
+
+The last line counts rounds: a CU holding more wavefronts than fit at once runs them in rounds, and pays the exposed time once per round. The latency term is also never less than one round trip to the deepest level the traffic reached.
+
+### 5. A worked example
+
+<p align="center"><img src="images/timing-ranking/composition-example.svg" alt="Composing one prediction for three softmax variants" width="100%"></p>
+
+The figure shows three variants of a 2048×3584 softmax from held-out set 5, which the model had not seen. Terms are in µs under one of the five knob sets (fit s1). Hardware is the median of 3 guarded runs.
+
+| variant | fixed | max(issue, bw, place) | latency | filling | flush | **predicted** | **hardware** |
+|---|---|---|---|---|---|---|---|
+| 2 warps · 1 row/program · `.wt` | 1.19 | 3.93 (bandwidth) | 3.17 | 0.65 | 0 | **8.95** | **8.46** |
+| 2 warps · 1 row/program · plain | 1.19 | 1.98 (bandwidth) | 3.17 | 0.65 | 7.79 | **14.79** | **10.27** |
+| 1 warp · 8 rows/program · plain | 1.19 | 1.98 (bandwidth) | 35.96 | 0.65 | 7.77 | **47.56** | **26.46** |
+
+How to read it:
+
+- **Store policy (rows 1 and 2).** The two variants have the same code apart from the store, so their issue and latency terms are identical.
+  - With plain stores, 14.7 MB of output is still dirty in L2 when the last wavefront ends. Writing it back is a serial 7.8 µs.
+  - With `.wt`, the same bytes cross the fabric during the kernel. The bandwidth term doubles (1.98 → 3.93 µs), but it overlaps with the work and nothing is left to flush.
+
+  The model predicts 40% less time for `.wt`; hardware measures 18% less.
+- **Rows per program (rows 2 and 3).** Eight rows per program and one warp means 256 wavefronts instead of 4096: one per CU instead of sixteen. Nothing hides the stalls of a wavefront that walks its rows one after another, so the latency term grows 11×.
+- **Absolute against relative time.** The predictions are 6% to 80% off in absolute time, yet they order the three variants correctly. The other four knob sets split the time between issue and latency very differently: the issue term of row 2 ranges from 0.1 to 12 µs across them. All five still order the three variants the same way. That disagreement is why the prediction averages five fits, and why calibration has a second stage.
+
+### 6. Calibration: why two stages
+
+The trace records the **raw** terms of every dispatch. `meter_refit.recompose()` reapplies the composition with multipliers (knobs) on each term, unit weight and level rate. Trying a new set of knobs therefore takes milliseconds and never reruns the emulator, and calibration is a search over those knobs.
 
 <p align="center"><img src="images/timing-ranking/calibration.svg" alt="Two-stage calibration" width="100%"></p>
 
-> **Why a second stage?** The corpus constrains absolute time, not which of two variants wins. Knobs such as the LDS and MFMA weights and the stall / latency split varied 20× to 2000× across seeds. Stage 2 pins them on ranking data. Cross-validated by group, it lifts GEMM pairwise accuracy from 84.8% to 88.8% and cuts pick regret from 15.1% to 5.3%.
+- **Stage 1: absolute time.**
+  - Data: the meter corpus, 260 kernels with hardware times.
+  - Fit: differential evolution on the log ratio of predicted to measured time. The loss is averaged per kernel category, so 50 elementwise kernels do not outvote 6 quantized ones.
+  - Result: 5 seeds give 5 knob sets.
+- **The gap.** Absolute time does not pin down the knobs that decide which variant wins. As in the example, many splits between issue and latency fit the corpus equally well. The LDS and MFMA weights varied 20× to 2000× between seeds.
+- **Stage 2: ranking.**
+  - Data: 1334 development variants in groups, with 6802 stable pairs.
+  - Fit: 9 of those knobs are refit with a pairwise logistic loss. For every pair that hardware separates by more than 10%, the penalty grows as the model puts the slower variant first, or puts the two too close.
+  - Each group weighs the same, and a pull toward the stage-1 values keeps the absolute calibration.
+  - Result, cross-validated by group: GEMM pairwise accuracy rises from 84.8% to 88.8%, and pick regret falls from 15.1% to 5.3%.
+- **Flush rate.** The corpus does not identify `flush_scale`, because the fabric rate can compensate for it. It is measured separately, on a store-policy copy microbenchmark.
+- **Prediction.** The predicted time of a variant is the geometric mean over the 5 knob sets. Only warm calls count, as in the hardware measurement: the first calls run on cold caches.
 
-### 5. Determinism
+### 7. Determinism
 
 | setting | why |
 |---|---|
 | `cpu_thread_budget: 1` | several dispatch threads deliver waves to the shared caches in a different order each run (±10–20%) |
 | `setarch -R` | with dirty lines in the caches, where buffers land changes set conflicts |
 
-With both, results are bit-for-bit reproducible, and one thread is also about 2.5× faster than the default.
+With both, results are bit-for-bit reproducible. One thread is also about 2.5× faster than the default.
 
 ---
 
