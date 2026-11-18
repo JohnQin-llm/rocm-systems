@@ -18,6 +18,7 @@
 /// they are what actually breaks when the model is changed carelessly.
 
 #include "rocjitsu/vm/timing/cache_des.h"
+#include "rocjitsu/vm/timing/classify.h"
 #include "rocjitsu/vm/timing/coalesce.h"
 #include "rocjitsu/vm/timing/cu_des.h"
 #include "rocjitsu/vm/timing/engine.h"
@@ -473,6 +474,18 @@ TEST(TimingEngine, RunsToIdleAndStaysThere) {
   run_dispatch(plane, shape, 32);
   const std::uint64_t settled = plane.current_cycles();
   EXPECT_EQ(plane.current_cycles(), settled);
+}
+
+TEST(TimingMatrix, NarrowInputsSelectTheNarrowRate) {
+  EXPECT_EQ(matrix_type_of("v_mfma_f32_32x32x16_bf16"), MatrixType::BF16);
+  EXPECT_EQ(matrix_type_of("v_mfma_f32_32x32x16_fp8_fp8"), MatrixType::Narrow);
+  EXPECT_EQ(matrix_type_of("v_mfma_f32_32x32x64_f8f6f4"), MatrixType::Narrow);
+  EXPECT_EQ(matrix_type_of("v_mfma_scale_f32_16x16x128_f8f6f4"), MatrixType::Narrow);
+  // Wave-size and target suffixes come after the type and do not change it.
+  EXPECT_EQ(matrix_type_of("v_mfma_f32_32x32x64_f8f6f4_w64"), MatrixType::Narrow);
+  EXPECT_EQ(matrix_type_of("v_mfma_f32_16x16x32_fp8_fp8_w64_gfx950"), MatrixType::Narrow);
+  EXPECT_EQ(matrix_type_of("v_mfma_f32_16x16x32_bf16_w64"), MatrixType::BF16);
+  EXPECT_EQ(matrix_macs("v_mfma_f32_32x32x64_f8f6f4"), 32u * 32u * 64u);
 }
 
 } // namespace
