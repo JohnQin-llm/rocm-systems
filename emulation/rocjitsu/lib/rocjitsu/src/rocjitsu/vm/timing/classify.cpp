@@ -253,10 +253,21 @@ std::uint64_t matrix_macs(std::string_view mnemonic) {
 }
 
 MatrixType matrix_type_of(std::string_view mnemonic) {
-  const std::size_t last = mnemonic.rfind('_');
-  if (last == std::string_view::npos)
-    return MatrixType::Default;
-  const std::string_view tail = mnemonic.substr(last + 1);
+  // A wave-size or target suffix (`_w64`, `_gfx950`) can follow the type, and
+  // the type itself is not always one token: gfx950 names the inputs of its
+  // narrow matrix instructions `f8f6f4`, the formats the operands may hold.
+  // Missing either read those instructions as Default, at one multiply-
+  // accumulate a cycle, and costed an fp8 matrix multiply about 500x too slow.
+  std::string_view tail;
+  for (;;) {
+    const std::size_t last = mnemonic.rfind('_');
+    if (last == std::string_view::npos)
+      return MatrixType::Default;
+    tail = mnemonic.substr(last + 1);
+    if (tail != "w64" && tail != "w32" && !has_prefix(tail, "gfx"))
+      break;
+    mnemonic = mnemonic.substr(0, last);
+  }
   if (tail == "f64")
     return MatrixType::F64;
   if (tail == "f32" || tail == "xf32")
@@ -266,7 +277,7 @@ MatrixType matrix_type_of(std::string_view mnemonic) {
   if (tail == "bf16")
     return MatrixType::BF16;
   if (tail == "fp8" || tail == "bf8" || tail == "f8" || tail == "fp4" || tail == "bf6" ||
-      tail == "fp6")
+      tail == "fp6" || tail == "f8f6f4")
     return MatrixType::Narrow;
   if (tail == "i8" || tail == "iu8" || tail == "i4" || tail == "iu4" || tail == "i32")
     return MatrixType::Integer;

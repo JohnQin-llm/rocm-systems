@@ -167,3 +167,51 @@ R10 and R8c pick the same kernel on 10 of 12 shapes; two shapes make up the diff
 - On m36_n6656_k1536, R10's pick is the true best, but its predicted 2.1% advantage sends it back to Default (14.1%).
 
 The listwise term overfits a feature of the development winners, which cross-validation by group did not catch. The pairs-only recipe stays.
+
+## Results (MI355X, held-out set 7 of PREREG-addendum-7: new operation families)
+
+Three families the model was never calibrated or developed on, from
+`kernel_families.py`. R8c (the recommended predictor) ranks the variants. P7c
+(the corpus knobs alone) predicts absolute time. One attention variant ran out
+of LDS on both sides and is excluded.
+
+| family | R8c accuracy | best non-timing baseline | R8c median regret | baseline regret | P7c median abs. error | R8c median abs. error |
+|---|---|---|---|---|---|---|
+| attention, 6 groups, 71 variants | 75.9% [71.3, 80.6] | instructions 78.1% | 19.5% | 31.4% | 26.0% | 23.4% |
+| RMSNorm, 6 groups, 72 variants | 97.6% [95.2, 99.5] | instructions 52.7% | 1.6% | 32.3% | 24.5% | 23.8% |
+| fp8 matmul, 6 groups, 96 variants | 70.9% [67.2, 74.4] | instructions 79.3% | 34.1% | 34.2% | 19745% | 12580% |
+
+Against the pre-registered criteria:
+
+| family | H1 (accuracy) | H2 (regret) | A1 (P7c median error <= 25%) |
+|---|---|---|---|
+| attention | fail | pass | fail |
+| RMSNorm | pass | pass | pass |
+| fp8 matmul | fail | pass | fail |
+
+**fp8 matmul: an emulator bug.** The model put every fp8 variant about 200x too
+slow. gfx950 names the inputs of its narrow matrix instructions `f8f6f4`
+(`v_mfma_f32_32x32x64_f8f6f4`). The matrix-type parser read that tail, and any
+`_w64` or `_gfx950` suffix, as an unknown type, which runs at one
+multiply-accumulate per cycle. Variants that the compiler lowered to the older
+`_fp8_fp8` instructions were costed correctly, so the ranking was only partly
+wrong.
+
+`classify.cpp` now reads `f8f6f4` as narrow and skips those suffixes, with a
+unit test. Re-emulated with the fix (post hoc, not a test of the
+pre-registration):
+
+| fp8 matmul, post hoc | accuracy 81.0% [77.8, 84.0] | regret 33.6% | P7c median abs. error 20.9% | R8c 20.5% |
+|---|---|---|---|---|
+
+The accuracy point estimate is now above the instruction-count baseline, but
+the CI is not.
+
+18 of the 143 attention and RMSNorm items also changed by less than 0.1% when
+re-emulated with the fixed binary. Bit-for-bit determinism holds within one
+environment, but not across binaries installed at different paths.
+
+**Absolute time.** On families the model has never seen, the median error is
+21-26% and the 90th percentile is 50-60%. That matches the development
+families (20-25%). The tail, not the median, is what keeps the model a ranking
+tool rather than a stopwatch.
