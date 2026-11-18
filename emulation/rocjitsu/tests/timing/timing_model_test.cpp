@@ -525,5 +525,25 @@ TEST(TimingLds, ATwoAddressAccessPaysForBothHalves) {
   EXPECT_GT(cost(true), cost(false));
 }
 
+TEST(TimingLds, GranuleModelCostsWideAccessesByEightByteStride) {
+  const auto strided = [](std::uint64_t stride) {
+    std::vector<std::uint64_t> addresses;
+    for (std::uint64_t lane = 0; lane < 64; ++lane)
+      addresses.push_back(lane * stride);
+    return addresses;
+  };
+  // A dword at a 4-byte stride and a dwordx2 at an 8-byte stride are both
+  // conflict free; doubling either stride is a two-way conflict.
+  EXPECT_EQ(lds_granule_cycles(strided(4), 4, 64, 8, 32, 2.0), 2u);
+  EXPECT_EQ(lds_granule_cycles(strided(8), 8, 64, 8, 32, 2.0), 2u);
+  EXPECT_EQ(lds_granule_cycles(strided(8), 4, 64, 8, 32, 2.0), 4u);
+  EXPECT_EQ(lds_granule_cycles(strided(16), 8, 64, 8, 32, 2.0),
+            lds_granule_cycles(strided(16), 16, 64, 8, 32, 2.0));
+  // Every lane on one bank is capped.
+  EXPECT_EQ(lds_granule_cycles(strided(512), 4, 64, 8, 32, 2.0), 64u);
+  // Broadcast stays free.
+  EXPECT_EQ(lds_granule_cycles(std::vector<std::uint64_t>(64, 0x40), 4, 64, 8, 32, 2.0), 2u);
+}
+
 } // namespace
 } // namespace rocjitsu::timing

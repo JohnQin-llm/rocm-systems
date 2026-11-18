@@ -403,12 +403,16 @@ AccessCost lds_access(const Tuning &tuning, const RetiredInstruction &retired) {
                                           std::max<std::uint64_t>(1, tuning.lds_lanes_per_phase));
     cost.issue_cycles = std::max<std::uint64_t>(1, phases) * banks;
   } else {
-    cost.issue_cycles = lds_conflict_cycles(*retired.lane_addresses, retired.bytes_per_lane, banks,
-                                            tuning.lds_bank_bytes, tuning.lds_lanes_per_phase);
+    const auto conflict = [&](const std::vector<std::uint64_t> &addresses) {
+      if (tuning.lds_granule_bytes != 0)
+        return lds_granule_cycles(addresses, retired.bytes_per_lane, banks, tuning.lds_granule_bytes,
+                                  tuning.lds_max_ways, tuning.lds_cycles_per_way);
+      return lds_conflict_cycles(addresses, retired.bytes_per_lane, banks, tuning.lds_bank_bytes,
+                                 tuning.lds_lanes_per_phase);
+    };
+    cost.issue_cycles = conflict(*retired.lane_addresses);
     if (retired.second_lane_addresses != nullptr)
-      cost.issue_cycles +=
-          lds_conflict_cycles(*retired.second_lane_addresses, retired.bytes_per_lane, banks,
-                              tuning.lds_bank_bytes, tuning.lds_lanes_per_phase);
+      cost.issue_cycles += conflict(*retired.second_lane_addresses);
   }
   // The conflict passes happen after the access reaches the array, so they
   // extend the return rather than overlapping it.

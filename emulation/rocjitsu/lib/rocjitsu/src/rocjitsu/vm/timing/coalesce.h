@@ -228,4 +228,47 @@ inline std::uint64_t lds_conflict_cycles(std::span<const std::uint64_t> addresse
   return std::max<std::uint64_t>(1, total);
 }
 
+/// @brief Cycles a local data share access takes when the array is described
+///        by its access granule rather than by phases.
+///
+/// @param granule_bytes Widest piece of one lane's access a bank serves at
+///        once. A lane wider than this is served as several granules on
+///        consecutive banks.
+/// @param max_ways Most passes a single access is ever charged.
+/// @param cycles_per_way Cycles each pass occupies the array.
+///
+/// @details Measured on MI355X with one wavefront reading at a lane stride
+/// (ubench mb lds): a dword, a dwordx2 and a dwordx4 access cost the same
+/// at the same stride in eight-byte units, so the array resolves the whole
+/// wavefront at once over eight-byte granules, about two cycles a pass, and
+/// stops getting slower beyond thirty-two passes. Lanes reading the same
+/// address broadcast for free, as in lds_conflict_cycles().
+inline std::uint64_t lds_granule_cycles(std::span<const std::uint64_t> addresses,
+                                        std::uint32_t bytes_per_lane, std::uint64_t banks,
+                                        std::uint64_t granule_bytes, std::uint64_t max_ways,
+                                        double cycles_per_way) {
+  if (addresses.empty())
+    return 0;
+  banks = std::max<std::uint64_t>(1, banks);
+  const std::uint64_t width = std::max<std::uint64_t>(4, bytes_per_lane);
+  const std::uint64_t granule = std::max<std::uint64_t>(4, std::min(width, granule_bytes));
+  const std::uint64_t pieces = (width + granule - 1) / granule;
+
+  constexpr std::size_t kBankSlots = 256;
+  std::uint16_t multiplicity[kBankSlots];
+  std::memset(multiplicity, 0, sizeof(multiplicity));
+  LaneSet distinct;
+  for (std::uint64_t address : addresses)
+    distinct.insert(address);
+  std::uint64_t ways = 1;
+  for (std::uint64_t address : distinct)
+    for (std::uint64_t piece = 0; piece < pieces; ++piece) {
+      const std::size_t bank = static_cast<std::size_t>((address / granule + piece) % banks);
+      ways = std::max<std::uint64_t>(ways, ++multiplicity[bank % kBankSlots]);
+    }
+  ways = std::min(ways, std::max<std::uint64_t>(1, max_ways));
+  return std::max<std::uint64_t>(
+      1, static_cast<std::uint64_t>(static_cast<double>(ways) * cycles_per_way + 0.5));
+}
+
 } // namespace rocjitsu::timing
