@@ -67,7 +67,8 @@ B = WORK
 sys.path.insert(0, str(TOOLS.parent))
 import meter_refit as mr  # noqa: E402
 
-base = mr.config_defaults(mr.load_config(str(ROOT / "configs/gfx950_mi355x_kmd_timing.json")))
+base = mr.config_defaults(mr.load_config(
+        os.environ.get("ROCJITSU_CONFIG", str(ROOT / "configs/gfx950_mi355x_kmd_timing.json"))))
 
 
 def load_tunings(pattern):

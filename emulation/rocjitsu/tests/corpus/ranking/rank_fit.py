@@ -247,7 +247,8 @@ def main():
     ap.add_argument("--listwise", type=float, default=0.0, help="weight of the listwise term (0: pairs only)")
     args = ap.parse_args()
 
-    base = mr.config_defaults(mr.load_config(str(ROOT / "configs/gfx950_mi355x_kmd_timing.json")))
+    base = mr.config_defaults(mr.load_config(
+        os.environ.get("ROCJITSU_CONFIG", str(ROOT / "configs/gfx950_mi355x_kmd_timing.json"))))
     items = {}
     for spec in args.dev:
         bench, hw_dir, emus = spec.split(":")
