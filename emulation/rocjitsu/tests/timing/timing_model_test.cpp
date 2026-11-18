@@ -488,5 +488,42 @@ TEST(TimingMatrix, NarrowInputsSelectTheNarrowRate) {
   EXPECT_EQ(matrix_macs("v_mfma_f32_32x32x64_f8f6f4"), 32u * 32u * 64u);
 }
 
+TEST(TimingLds, ATwoAddressAccessPaysForBothHalves) {
+  // ds_write2st64_b64: each lane writes at its address and 64 rows further on.
+  // The second half lands on the same banks as the first, so it is a second
+  // pass, not a free one.
+  const auto cost = [](bool second_half) {
+    TimingPlane plane{Tuning::parse(tiny_config(R"(,
+        "lds.banks": 64, "lds.bank_bytes": 4, "lds.lanes_per_phase": 64,
+        "lds.latency_cycles": 20, "lds_write.issue_cycles": 1, "local_data_share.ports": 1)"))};
+    const DispatchShape shape = shape_for(1, 1);
+    std::vector<std::uint64_t> first, second;
+    for (std::uint64_t lane = 0; lane < 64; ++lane) {
+      first.push_back(lane * 8);
+      second.push_back(lane * 8 + 64 * 64 * 8);
+    }
+    RetiredInstruction write;
+    write.pc = 0x3000;
+    write.inst_class = InstClass::LdsWrite;
+    write.active_lanes = 64;
+    write.wave_lanes = 64;
+    write.wait.fill(kUnconstrained);
+    write.lane_addresses = &first;
+    write.second_lane_addresses = second_half ? &second : nullptr;
+    write.bytes_per_lane = 8;
+    write.space = MemorySpace::LocalDataShare;
+    write.is_load = false;
+    plane.dispatch_begin(shape);
+    const std::uint64_t before = plane.current_cycles();
+    plane.wave_begin(0, 0, shape.dispatch_id, shape.queue_id);
+    for (int repeat = 0; repeat < 16; ++repeat)
+      plane.instruction(0, 0, write);
+    plane.wave_end(0, 0);
+    plane.dispatch_end(shape.dispatch_id, shape.queue_id);
+    return plane.current_cycles() - before;
+  };
+  EXPECT_GT(cost(true), cost(false));
+}
+
 } // namespace
 } // namespace rocjitsu::timing

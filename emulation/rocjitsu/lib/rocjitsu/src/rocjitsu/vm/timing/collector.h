@@ -105,6 +105,7 @@ struct CollectedWave final : rocjitsu::WavefrontState {
   /// @details Owned by the wavefront and reused, so the sixty-four addresses a
   /// vector access produces cost no allocation after the first one.
   std::vector<std::uint64_t> lane_addresses;
+  std::vector<std::uint64_t> second_lane_addresses;
 };
 
 /// @brief Turns rocjitsu execution into the timing plane's calls.

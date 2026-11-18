@@ -405,6 +405,10 @@ AccessCost lds_access(const Tuning &tuning, const RetiredInstruction &retired) {
   } else {
     cost.issue_cycles = lds_conflict_cycles(*retired.lane_addresses, retired.bytes_per_lane, banks,
                                             tuning.lds_bank_bytes, tuning.lds_lanes_per_phase);
+    if (retired.second_lane_addresses != nullptr)
+      cost.issue_cycles +=
+          lds_conflict_cycles(*retired.second_lane_addresses, retired.bytes_per_lane, banks,
+                              tuning.lds_bank_bytes, tuning.lds_lanes_per_phase);
   }
   // The conflict passes happen after the access reaches the array, so they
   // extend the return rather than overlapping it.

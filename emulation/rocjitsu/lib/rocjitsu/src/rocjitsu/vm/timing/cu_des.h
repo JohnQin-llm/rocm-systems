@@ -111,6 +111,10 @@ struct RetiredInstruction {
   /// @brief Per-lane byte addresses, in lane order, for a vector access. Empty
   ///        when no lane participated, which is not the same as unrecoverable.
   const std::vector<std::uint64_t> *lane_addresses = nullptr;
+  /// @brief The second address set of a two-address local data share access
+  ///        (`ds_write2*`, `ds_read2*`), in the same lane order; null for any
+  ///        other instruction.
+  const std::vector<std::uint64_t> *second_lane_addresses = nullptr;
   std::uint32_t bytes_per_lane = 4;
   MemorySpace space = MemorySpace::None;
   bool is_load = true;
