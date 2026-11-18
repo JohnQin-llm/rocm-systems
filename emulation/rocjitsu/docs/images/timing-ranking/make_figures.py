@@ -510,7 +510,101 @@ def fig_examples():
     fig_agent()
 
 
-FIGURES = [fig_architecture, fig_memory, fig_placement, fig_calibration, fig_validation, fig_results, fig_examples]
+HATCH = ('<defs><pattern id="hatch" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">'
+         '<rect width="8" height="8" fill="#fffbeb"/><line x1="0" y1="0" x2="0" y2="8" stroke="#f59e0b" '
+         'stroke-width="3" stroke-opacity="0.45"/></pattern></defs>')
+
+
+def block(s, x0, x1, y, h, label, pal, size=12, hatch=False):
+    main, tint, deep = PAL[pal]
+    fill = "url(#hatch)" if hatch else tint
+    s.add(f'<rect x="{x0}" y="{y}" width="{x1 - x0}" height="{h}" rx="7" fill="{fill}" stroke="{main}" stroke-width="1.3"/>')
+    if label:
+        if tw(label, size, True) > x1 - x0 - 8:
+            print(f"  overflow: {label!r} needs {tw(label, size, True):.0f} of {x1 - x0 - 8}")
+        s.text((x0 + x1) / 2, y + h / 2 + size * 0.36, label, size, deep, 700, "middle")
+
+
+def fig_wavefront():
+    s = Svg(1200, 480, "Life of a wavefront",
+            "Each wavefront has its own clock. A memory request runs in the background; s_waitcnt is where its latency shows.")
+    s.add(HATCH)
+    rows = {"A": 112, "M": 200, "B": 288}
+    s.text(34, rows["A"] + 18, "wavefront A", 13.5, "#0f172a", 700)
+    s.text(34, rows["A"] + 35, "one CU", 11.5, MUTED)
+    s.text(34, rows["M"] + 18, "A's load request", 13.5, "#0f172a", 700)
+    s.text(34, rows["M"] + 35, "through the hierarchy", 11.5, MUTED)
+    s.text(34, rows["B"] + 18, "wavefront B", 13.5, "#0f172a", 700)
+    s.text(34, rows["B"] + 35, "same CU, resident", 11.5, MUTED)
+    for x0, x1, label, pal in ((190, 270, "v_mul", "blue"), (270, 370, "global_load", "teal"),
+                               (370, 540, "v_mfma × 2", "violet"), (860, 960, "v_add", "blue"),
+                               (960, 1080, "global_store", "teal")):
+        block(s, x0, x1, rows["A"], 44, label, pal)
+    block(s, 540, 860, rows["A"], 44, "s_waitcnt vmcnt(0) · stall", "amber", hatch=True)
+    for x0, x1, label in ((370, 440, "L1 miss"), (440, 530, "L2 miss"), (530, 590, "fabric"),
+                          (590, 680, "MALL miss"), (680, 860, "HBM")):
+        block(s, x0, x1, rows["M"] + 6, 32, label, "slate", size=11)
+    for x0, x1, label, pal in ((540, 640, "v_mfma", "violet"), (640, 730, "ds_read", "indigo"),
+                               (730, 850, "v_mfma", "violet")):
+        block(s, x0, x1, rows["B"], 44, label, pal)
+    s.arrow([(320, rows["A"] + 46), (320, rows["M"] + 20), (366, rows["M"] + 20)], "#0d9488", width=1.6)
+    s.arrow([(860, rows["M"] + 4), (860, rows["A"] + 48)], "#d97706", width=1.8)
+    s.text(870, rows["M"] - 8, "data arrives", 11.5, "#b45309", 700)
+    s.text(700, rows["M"] + 66, "each level: hit latency + queueing; misses go on", 11, MUTED, 500, "middle")
+    s.text(695, rows["B"] + 64, "B issues while A waits: part of A's stall is hidden", 11.5, "#4c1d95", 600, "middle")
+    by = 382
+    s.add(f'<path d="M190,{by} v-8 M190,{by} H1080 M1080,{by} v-8" fill="none" stroke="#0f172a" stroke-width="1.4"/>')
+    s.text(635, by + 20, "critical path of A = its issue time + its stalls", 12.5, "#0f172a", 700, "middle")
+    s.text(34, 436, "issue term: work queued on each port of the busiest CU, over all its wavefronts.", 12.5, "#334155", 500)
+    s.text(34, 458, "latency term: critical path − what the other resident wavefronts hide, × rounds of wavefronts.",
+           12.5, "#334155", 500)
+    s.render("wavefront-timeline.svg")
+
+
+# (label, sub, fixed, throughput, which, latency, filling, flush, hardware)  fit s1, held-out set 5
+COMPOSE = [("2 warps · 1 row/program · .wt", "w2_r1_c2", 1.19, 3.93, "bandwidth", 3.17, 0.65, 0.00, 8.46),
+           ("2 warps · 1 row/program · plain", "w2_r1_c0", 1.19, 1.98, "bandwidth", 3.17, 0.65, 7.79, 10.27),
+           ("1 warp · 8 rows/program · plain", "w1_r8_c0", 1.19, 1.98, "bandwidth", 35.96, 0.65, 7.77, 26.46)]
+
+
+def fig_composition():
+    s = Svg(1200, 470, "Composing one prediction: three softmax variants",
+            "Held-out set 5, 2048×3584. Terms in µs under one knob set (fit s1); hardware is the median of 3 guarded runs.")
+    terms = [("fixed", "slate"), ("max(issue, bandwidth, placement)", "blue"), ("latency", "violet"),
+             ("filling", "teal"), ("flush", "amber")]
+    x = 34
+    for name, pal in terms:
+        x += s.chip(x, 84, name, pal, 11) + 10
+    s.chip(x + 10, 84, "hardware", "ink", 11)
+    x0, k = 330, 16.0
+    for i, (label, sub, fixed, thr, which, lat, fill, flush, hw) in enumerate(COMPOSE):
+        y = 136 + i * 92
+        s.text(34, y + 14, label, 13.5, "#0f172a", 700)
+        s.text(34, y + 32, f"{sub} · rank: model {i + 1}, hardware {i + 1}", 11.5, MUTED)
+        cx = x0
+        for (name, pal), v in zip(terms, (fixed, thr, lat, fill, flush)):
+            if v <= 0:
+                continue
+            w = v * k
+            main, tint, deep = PAL[pal]
+            s.add(f'<rect x="{cx:.1f}" y="{y}" width="{w:.1f}" height="30" fill="{main}" fill-opacity="0.85" '
+                  f'stroke="#ffffff" stroke-width="1"/>')
+            txt = f"{v:.2f}"
+            if tw(txt, 11, True) < w - 6:
+                s.text(cx + w / 2, y + 19.5, txt, 11, "#ffffff", 700, "middle")
+            cx += w
+        total = fixed + thr + lat + fill + flush
+        s.text(cx + 8, y + 20, f"{total:.2f} µs", 13, "#0f172a", 800)
+        s.add(f'<rect x="{x0}" y="{y + 38}" width="{hw * k:.1f}" height="12" rx="3" fill="#0f172a" fill-opacity="0.75"/>')
+        s.text(x0 + hw * k + 8, y + 48, f"{hw:.2f} µs", 12, "#0f172a", 600)
+    s.text(34, 428, "Same code except the store: .wt moves its output during the kernel (bandwidth up) and leaves nothing to flush.",
+           12.5, "#334155", 500)
+    s.text(34, 450, "8 rows per program: one wavefront per CU, nothing hides its stalls, so latency grows 11×.",
+           12.5, "#334155", 500)
+    s.render("composition-example.svg")
+
+
+FIGURES = [fig_architecture, fig_memory, fig_placement, fig_wavefront, fig_composition, fig_calibration, fig_validation, fig_results, fig_examples]
 
 if __name__ == "__main__":
     for f in FIGURES:
