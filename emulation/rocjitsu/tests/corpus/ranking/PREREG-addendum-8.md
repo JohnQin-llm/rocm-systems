@@ -87,3 +87,9 @@ TunableOp enumeration of m11_n5632_k4096 hung the GPU three times (`HW Exception
 The replacement shape m13_n4608_k4096 hung the GPU too. So did m9_n4608_k4608, which tuned cleanly on node g34 for held-out set 6. On node pit2-p03-g53, with the same container image and driver version (6.16.13), m9_n4608_k4608 tunes to completion. The hangs belong to node g40, not to the shapes.
 
 The first amendment is therefore withdrawn and the original shape list stands: m11_n5632_k4096 is back and m13_n4608_k4096 is out. The hipBLASLt part of the set moves to node g53: TunableOp enumeration, and the hardware truth on its idle GPUs, guarded as always. The Triton and kernel-family parts stay on g40, HIP 0-7, as stated above.
+
+## Third amendment (2026-11-19 02:25 UTC, before any held-out-8 result was scored)
+
+Node g53 was not cleared for this work, so the hipBLASLt hardware truth there was stopped at about 02:12 UTC. Enumeration and selection had finished on g53 (`selected.json` sha256 95abff9d..., `candidates.json` sha256 6be9a3a2...; neither changes). Of the 36 (run, shape) units, 32 were complete. Four were not: run 2 of m52_n2048_k5120 and m1536_n512_k3072 (the latter interrupted on its first pick, whose record is discarded), and run 3 of m28_n3840_k3072 and m704_n1024_k2048.
+
+These four units are timed on node g40, HIP 0-7, with the same container image, the same selected solutions and the same guard. The 32 g53 units stand as measured. A shape's picks within one run are still timed back to back on one GPU, so no within-run comparison mixes GPUs or nodes; for the four shapes above, one of their three runs comes from g40. If a unit hangs a g40 GPU, it is not replaced: it stays missing and the criteria that need it are reported as incomplete, as the addendum already prescribes. No prediction has been compared with any held-out-8 measurement yet.
