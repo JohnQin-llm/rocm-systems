@@ -77,3 +77,7 @@ Reported, not hypotheses:
 - the share of items within 25%.
 
 The scoring uses `prereg_score.py` (with `--ref-config` for O) and `abs_score.py`.
+
+## Amendment (2026-11-19, before any held-out-8 kernel was timed for the benchmark)
+
+TunableOp enumeration of m11_n5632_k4096 hung the GPU three times (`HW Exception ... GPU Hang`), on HIP 5 twice and on HIP 0 once, each time inside a different hipBLASLt solution. The shape cannot produce a candidate list, so it is replaced by m13_n4608_k4096, which has never been run. Everything else in this addendum is unchanged. The only hardware data seen so far is the partial TunableOp log of the dropped shape.
