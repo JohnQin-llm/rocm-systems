@@ -190,6 +190,15 @@ struct Tuning {
   /// the old behaviour.
   std::uint64_t barrier_cycles = 0;
 
+  /// @brief Whether second-level caches keep their contents across dispatches.
+  ///
+  /// @details False (the default) drops every L2 at each dispatch's launch acquire. On MI355X a
+  /// kernel launch does not: a pointer chase through a buffer the previous kernel touched costs an
+  /// L2 hit (about 215 cycles a hop) in the next kernel, against about 895 right after the caches
+  /// were flushed. Benchmark loops re-run a kernel on the same buffers, so dropping the L2 makes
+  /// every iteration read as the cold first one. First-level caches are invalidated either way.
+  bool l2_keep_across_dispatches = false;
+
   /// @brief How the issue term scales with wavefronts resident per compute
   ///        unit, as an exponent on that count.
   ///
@@ -261,6 +270,14 @@ struct Tuning {
   std::uint64_t lds_granule_bytes = 0;
   std::uint64_t lds_max_ways = 64;
   double lds_cycles_per_way = 1.0;
+  /// @brief Cost an LDS access from its bank multiplicity with the rule measured on MI355X.
+  ///
+  /// @details Multiplicity is the largest number of 4-byte accesses one instruction sends to a
+  /// single bank. Reads cost max(2, multiplicity, x2 for 4-byte lanes) cycles of the CU's LDS;
+  /// writes cost max(4 / 6 / 13 for b32 / b64 / b128, 2 x multiplicity); both capped at 64.
+  /// Measured with strided and swizzled ds_read/ds_write patterns at 1, 4 and 8 wavefronts
+  /// (tests/corpus/ubench LDS pattern sweep). False keeps the granule / conflict models.
+  bool lds_measured_banks = false;
 
   std::uint64_t dispatch_start_cycles = 10000;
   std::uint64_t dispatch_end_cycles = 10000;

@@ -55,6 +55,22 @@ TimingPlane::TimingPlane(Tuning tuning)
     if (trace_ != nullptr)
       std::setvbuf(trace_, nullptr, _IOLBF, 0);
   }
+  // One file per process, for the same reason the trace carries the pid.
+  if (const char *prefix = std::getenv("ROCJITSU_TIMING_ISTREAM");
+      prefix != nullptr && *prefix != '\0') {
+    const std::string path = std::string(prefix) + "." + std::to_string(::getpid());
+    istream_ = std::fopen(path.c_str(), "we");
+    const char *units = std::getenv("ROCJITSU_TIMING_ISTREAM_UNITS");
+    istream_units_ = units != nullptr ? static_cast<std::uint32_t>(std::strtoul(units, nullptr, 10)) : 1;
+    const char *stride = std::getenv("ROCJITSU_TIMING_ISTREAM_STRIDE");
+    istream_stride_ = std::max<std::uint32_t>(1, stride != nullptr ? static_cast<std::uint32_t>(std::strtoul(stride, nullptr, 10)) : 1);
+    if (istream_ != nullptr) {
+      IStreamRecord header;
+      header.type = 7;
+      header.a = 2;
+      istream_write(header);
+    }
+  }
 
   if (!tuning_.enabled)
     return;
@@ -148,6 +164,8 @@ TimingPlane::TimingPlane(Tuning tuning)
 TimingPlane::~TimingPlane() {
   if (trace_ != nullptr)
     std::fclose(trace_);
+  if (istream_ != nullptr)
+    std::fclose(istream_);
 }
 
 void TimingPlane::trace_dispatch(const DispatchDes &dispatch) {
@@ -367,6 +385,13 @@ void TimingPlane::wave_begin(std::uint32_t compute_unit, std::uint32_t slot,
       dispatch = found->second.get();
   }
   if (dispatch != nullptr && dispatch->claim_acquire()) {
+    if (istream_ != nullptr) {
+      IStreamRecord record;
+      record.type = 4;
+      record.a = istream_acquires_++;
+      record.b = dispatch_id;
+      istream_write(record);
+    }
     // The launch acquire, applied at the moment the dispatch first executes.
     dispatch->clear_units();
     for (auto &cache : l1_vector_)
@@ -375,13 +400,24 @@ void TimingPlane::wave_begin(std::uint32_t compute_unit, std::uint32_t slot,
       cache->invalidate();
     for (auto &cache : l1_instruction_)
       cache->invalidate();
-    for (auto &cache : l2_)
-      cache->invalidate();
+    if (!tuning_.l2_keep_across_dispatches)
+      for (auto &cache : l2_)
+        cache->invalidate();
     snapshot_bandwidth(key);
   }
   if (cu_dispatch_[unit] != key) {
     cu_dispatch_[unit] = key;
     cu_base_[unit] = engine_.now();
+  }
+  if (istream_wants(unit)) {
+    IStreamRecord record;
+    record.type = 1;
+    record.slot = static_cast<std::uint16_t>(slot);
+    record.cu = static_cast<std::uint32_t>(unit);
+    record.a = compute_unit;
+    record.b = dispatch_id;
+    record.wg = compute_unit;
+    istream_write(record);
   }
   compute_units_[unit]->wave_begin(slot);
 }
@@ -390,13 +426,23 @@ void TimingPlane::instruction(std::uint32_t compute_unit, std::uint32_t slot,
                               const RetiredInstruction &retired) {
   if (!tuning_.enabled || compute_units_.empty())
     return;
+  istream_wg_ = compute_unit;
   compute_units_[fold_unit(compute_unit)]->instruction(slot, retired);
 }
 
 void TimingPlane::wave_end(std::uint32_t compute_unit, std::uint32_t slot) {
   if (!tuning_.enabled || compute_units_.empty())
     return;
-  compute_units_[fold_unit(compute_unit)]->wave_end(slot);
+  const std::size_t unit = fold_unit(compute_unit);
+  if (istream_wants(unit)) {
+    IStreamRecord record;
+    record.type = 2;
+    record.slot = static_cast<std::uint16_t>(slot);
+    record.cu = static_cast<std::uint32_t>(unit);
+    record.wg = compute_unit;
+    istream_write(record);
+  }
+  compute_units_[unit]->wave_end(slot);
 }
 
 void TimingPlane::forward_to_channels(const MemoryRequest &request) {
@@ -593,6 +639,14 @@ void TimingPlane::dispatch_end(std::uint32_t dispatch_id, std::uint32_t queue_id
   charge_bandwidth(*dispatch, key);
   dispatch->end();
   trace_dispatch(*dispatch);
+  if (istream_ != nullptr) {
+    IStreamRecord record;
+    record.type = 5;
+    record.a = istream_ends_++;
+    record.b = dispatch_id;
+    istream_write(record);
+    std::fflush(istream_);
+  }
   {
     std::lock_guard<std::mutex> guard(mutex_);
     bandwidth_base_.erase(key);

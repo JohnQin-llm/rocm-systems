@@ -468,6 +468,7 @@ void TimingCollector::wave_dispatched(amdgpu::Wavefront &wf) {
   // the previous wavefront's pending instruction until it is cleared here.
   wave->has_pending = false;
   wave->pending_info = nullptr;
+  wave->user_priority = 0;
 
   ensure_dispatch_announced(wf, wave->dispatch_id, wave->queue_id);
 
@@ -522,6 +523,7 @@ void TimingCollector::barrier_resolved(std::span<amdgpu::Wavefront *> waves) {
     slots.clear();
     while (index < members.size() && members[index].first == unit)
       slots.push_back(members[index++].second);
+    plane_.istream_set_wg(unit);
     plane_.compute_unit(unit).barrier(slots);
   }
 }
@@ -584,6 +586,20 @@ void TimingCollector::emit_pending(CollectedWave &wave, const amdgpu::Wavefront 
   retired.wave_lanes = wf.wf_size();
   retired.reads = info->reads;
   retired.writes = info->writes;
+  if (inst != nullptr && info->mnemonic == "s_setprio" && inst->num_src_operands() > 0) {
+    if (const Operand *op = inst->src_operand(0)) {
+      if (const auto value = op->const_value())
+        wave.user_priority = static_cast<std::uint8_t>(*value & 3u);
+      else
+        wave.user_priority = static_cast<std::uint8_t>(std::strtoul(op->name().c_str(), nullptr, 0) & 3u);
+    }
+  }
+  retired.user_priority = wave.user_priority;
+  retired.size_bytes = static_cast<std::uint8_t>(info->size_bytes);
+  if (inst != nullptr && info->mnemonic == "s_nop" && inst->num_src_operands() > 0)
+    if (const Operand *op = inst->src_operand(0))
+      retired.immediate = static_cast<std::uint16_t>(op->const_value().value_or(
+          std::strtoul(op->name().c_str(), nullptr, 0)));
   // Filled even for an instruction that is not a wait. The array's default is
   // zero and zero is the strictest threshold there is, so a stray read of it
   // would drain every counter the wavefront has.

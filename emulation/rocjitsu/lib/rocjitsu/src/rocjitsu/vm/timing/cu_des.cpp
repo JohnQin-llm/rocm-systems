@@ -385,6 +385,46 @@ AccessCost scalar_access(const Tuning &tuning, TimingPlane &plane,
 ///
 /// @details The local data share never leaves the compute unit, so this is the
 /// one access the plane does not see.
+/// @brief LDS cycles from bank multiplicity, the rule measured on MI355X (Tuning::lds_measured_banks).
+///
+/// @details The multiplicity is the largest number of *distinct* words any one
+/// bank serves: lanes that read or write the same word share one pass
+/// (broadcast), so a wavefront reading one address costs no more than a
+/// conflict-free read (bench/ubench gen_ubench9.py strides, gen_ubench10.py
+/// broadcasts).
+std::uint64_t lds_measured_cycles(const RetiredInstruction &retired, std::uint64_t banks,
+                                  std::uint64_t bank_bytes) {
+  thread_local std::vector<std::uint64_t> words;   // reused: no allocation per access
+  words.clear();
+  const std::uint64_t width = std::max<std::uint64_t>(1, bank_bytes);
+  const std::uint64_t per_lane = std::max<std::uint64_t>(width, retired.bytes_per_lane);
+  const auto add = [&](const std::vector<std::uint64_t> &addresses) {
+    for (const std::uint64_t address : addresses)
+      for (std::uint64_t offset = 0; offset < per_lane; offset += width)
+        words.push_back((address + offset) / width);
+  };
+  add(*retired.lane_addresses);
+  if (retired.second_lane_addresses != nullptr)
+    add(*retired.second_lane_addresses);
+  std::sort(words.begin(), words.end());
+  words.erase(std::unique(words.begin(), words.end()), words.end());
+  thread_local std::vector<std::uint32_t> count;
+  count.assign(static_cast<std::size_t>(banks), 0);
+  std::uint32_t multiplicity = 0;
+  for (const std::uint64_t word : words)
+    multiplicity = std::max(multiplicity, ++count[static_cast<std::size_t>(word % banks)]);
+  const std::uint64_t m = std::max<std::uint32_t>(1, multiplicity);
+  std::uint64_t cycles = 0;
+  if (retired.is_load) {
+    const std::uint64_t floor = retired.bytes_per_lane >= 16 ? 4 : 2;
+    cycles = std::max<std::uint64_t>(floor, retired.bytes_per_lane <= 4 ? 2 * m : m);
+  } else {
+    const std::uint64_t floor = retired.bytes_per_lane >= 16 ? 13 : retired.bytes_per_lane >= 8 ? 6 : 4;
+    cycles = std::max<std::uint64_t>(floor, 2 * m);
+  }
+  return std::min<std::uint64_t>(cycles, 64);
+}
+
 AccessCost lds_access(const Tuning &tuning, const RetiredInstruction &retired) {
   AccessCost cost;
   if (touched_nothing(retired)) {
@@ -419,6 +459,11 @@ AccessCost lds_access(const Tuning &tuning, const RetiredInstruction &retired) {
                                           std::max<std::uint64_t>(1, tuning.lds_lanes_per_phase));
     cost.issue_cycles = std::max<std::uint64_t>(1, phases) * banks;
   } else {
+    if (tuning.lds_measured_banks) {
+      cost.issue_cycles = lds_measured_cycles(retired, banks, tuning.lds_bank_bytes);
+      cost.latency_cycles = tuning.lds_latency_cycles + cost.issue_cycles;
+      return cost;
+    }
     const auto conflict = [&](const std::vector<std::uint64_t> &addresses) {
       if (tuning.lds_granule_bytes != 0)
         return lds_granule_cycles(addresses, retired.bytes_per_lane, banks, tuning.lds_granule_bytes,
@@ -579,6 +624,7 @@ void ComputeUnitDes::instruction(std::uint32_t slot, const RetiredInstruction &r
   // ahead of issue, so a miss found while the wavefront still has buffered
   // instructions costs bandwidth and no time. Exposing every miss instead took
   // the reference corpus from a median ratio of 0.65 to 2.04 on its own.
+  std::uint64_t exposed_fetch = 0;
   const RequestOrigin origin{index_, slot, static_cast<std::uint32_t>(wave.instructions)};
   // The only clock a wavefront has is its own, which starts at zero. That is
   // the honest tick to hand over: deriving one from a device-wide elapsed time
@@ -589,6 +635,7 @@ void ComputeUnitDes::instruction(std::uint32_t slot, const RetiredInstruction &r
           fetch_cycles(tuning_, plane_, retired.pc, origin, issued_tick, period());
       fetch != 0 && !wave.fetch_exposed) {
     wave.fetch_exposed = true;
+    exposed_fetch = fetch;
     wave.stall_cycles += fetch;
     wave.cycle += fetch;
   }
@@ -615,6 +662,9 @@ void ComputeUnitDes::instruction(std::uint32_t slot, const RetiredInstruction &r
     }
   }
 
+  std::uint64_t stream_latency = result_ready - issue_cycle;
+  std::uint8_t stream_counter = 0xFF;
+  std::uint64_t stream_lines = 0;
   // -- Memory ----------------------------------------------------------------
   if (retired.space != MemorySpace::None) {
     AccessCost cost;
@@ -632,7 +682,12 @@ void ComputeUnitDes::instruction(std::uint32_t slot, const RetiredInstruction &r
     case MemorySpace::None:
       break;
     }
-    occupancy = std::max(occupancy, cost.issue_cycles);
+    // The measured LDS rule (Tuning::lds_measured_banks) already prices the
+    // whole wavefront, so the per-pass issue floor does not apply: a
+    // conflict-free ds_read_b32 holds the LDS 2 cycles on MI355X, not 4.
+    occupancy = retired.space == MemorySpace::LocalDataShare && tuning_.lds_measured_banks
+                    ? std::max<std::uint64_t>(1, cost.issue_cycles)
+                    : std::max(occupancy, cost.issue_cycles);
 
     // A compute unit has a finite number of miss-status registers, and a
     // wavefront that runs out cannot issue another miss until one frees. This
@@ -661,6 +716,9 @@ void ComputeUnitDes::instruction(std::uint32_t slot, const RetiredInstruction &r
                                     ? retired.wait_counter
                                     : counter_for_class(inst_class);
     const std::uint64_t completion = wave.cycle + cost.latency_cycles;
+    stream_counter = static_cast<std::uint8_t>(index_of(counter));
+    stream_latency = cost.latency_cycles;
+    stream_lines = cost.outstanding_lines;
     wave.outstanding[index_of(counter)].push_back(completion);
     // An access's destination registers are not ready a fixed pipeline depth
     // after issue; they are ready when the access completes. That is what makes
@@ -703,11 +761,73 @@ void ComputeUnitDes::instruction(std::uint32_t slot, const RetiredInstruction &r
   // accuracy a direct median-versus-maximum trade.
   wave.unit_cycles[index_of(FunctionalUnit::None)] +=
       tuning_.front_end_sixteenths[static_cast<std::size_t>(inst_class)];
+  if (plane_.istream_wants(index_)) {
+    IStreamRecord record;
+    record.type = 0;
+    record.inst_class = static_cast<std::uint8_t>(inst_class);
+    record.unit = static_cast<std::uint8_t>(unit_index);
+    record.counter = stream_counter;
+    record.slot = static_cast<std::uint16_t>(slot);
+    record.cu = index_;
+    record.a = static_cast<std::uint32_t>(std::min<std::uint64_t>(occupancy, 0xFFFFFFFFu));
+    record.b = static_cast<std::uint32_t>(std::min<std::uint64_t>(stream_latency, 0xFFFFFFFFu));
+    if (inst_class == InstClass::WaitCounter) {
+      record.wait = 0;
+      for (std::size_t counter = 0; counter < kNumWaitCounters && counter < 4; ++counter) {
+        const std::uint32_t threshold = retired.wait[counter];
+        const std::uint32_t byte = threshold == kUnconstrained ? 0xFFu : std::min<std::uint32_t>(threshold, 0xFEu);
+        record.wait |= byte << (8 * counter);
+      }
+    }
+    record.fetch = static_cast<std::uint32_t>(exposed_fetch);
+    record.priority = retired.user_priority;
+    record.front_end = static_cast<std::uint8_t>(tuning_.front_end_sixteenths[static_cast<std::size_t>(inst_class)]);
+    record.lines = static_cast<std::uint16_t>(std::min<std::uint64_t>(stream_lines, 0xFFFFu));
+    record.pc = retired.pc;
+    record.wg = plane_.istream_wg();
+    std::size_t at = 0;
+    const auto pack = [&](const RegisterRange &range) {
+      if (at < 12)
+        record.regs[at++] = (static_cast<std::uint32_t>(range.file) << 24) |
+                            (static_cast<std::uint32_t>(range.count) << 16) | range.index;
+    };
+    for (const RegisterRange &range : retired.reads)
+      pack(range);
+    record.reads = static_cast<std::uint8_t>(at);
+    for (const RegisterRange &range : retired.writes)
+      pack(range);
+    record.writes = static_cast<std::uint8_t>(at - record.reads);
+    plane_.istream_write(record);
+    if (plane_.istream_first_pc(retired.pc)) {
+      IStreamRecord name;
+      name.type = 6;
+      name.cu = index_;
+      name.pc = retired.pc;
+      name.a = retired.size_bytes;
+      name.b = retired.immediate;
+      if (retired.mnemonic != nullptr)
+        std::memcpy(name.regs, retired.mnemonic->data(),
+                    std::min<std::size_t>(retired.mnemonic->size(), sizeof(name.regs) - 1));
+      plane_.istream_write(name);
+    }
+  }
   ++wave.instructions;
   wave.class_counts[static_cast<std::size_t>(inst_class)] += 1;
 }
 
 void ComputeUnitDes::barrier(const std::vector<std::uint32_t> &slots) {
+  if (plane_.istream_wants(index_)) {
+    const std::uint32_t group = plane_.istream_next_barrier();
+    for (const std::uint32_t slot : slots) {
+      IStreamRecord record;
+      record.type = 3;
+      record.slot = static_cast<std::uint16_t>(slot);
+      record.cu = index_;
+      record.a = group;
+      record.wg = plane_.istream_wg();
+      plane_.istream_write(record);
+    }
+  }
   // Beyond the spread between the wavefronts, every barrier costs the hardware
   // a round of arrive-and-release across the workgroup. The spread this model
   // can see is near zero, because every wavefront in the group runs the same

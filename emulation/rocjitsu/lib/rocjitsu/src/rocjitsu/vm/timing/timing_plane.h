@@ -35,6 +35,9 @@
 
 #include "simdojo/sim/clock_domain.h"
 
+#include <cstring>
+#include <unordered_set>
+
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
@@ -45,6 +48,51 @@
 #include <vector>
 
 namespace rocjitsu::timing {
+
+/// @brief One record of the instruction-stream export.
+///
+/// @details A diagnostic, off unless ROCJITSU_TIMING_ISTREAM names a path
+/// prefix. It carries what the compute unit computed for each instruction of
+/// the sampled units -- port occupancy, result latency, wait thresholds and the
+/// registers named -- so that a scheduling model can be replayed over the real
+/// instruction streams offline. Fixed size and packed so a reader can map it.
+#pragma pack(push, 1)
+struct IStreamRecord {
+  /// 0 instruction, 1 wave begin, 2 wave end, 3 barrier member, 4 dispatch
+  /// acquire, 5 dispatch end.
+  std::uint8_t type = 0;
+  std::uint8_t inst_class = 0;
+  std::uint8_t unit = 0;
+  /// Wait counter an access posts to; 0xFF for none.
+  std::uint8_t counter = 0xFF;
+  std::uint16_t slot = 0;
+  std::uint8_t reads = 0;
+  std::uint8_t writes = 0;
+  /// Folded compute unit.
+  std::uint32_t cu = 0;
+  /// Instruction: port occupancy. Wave begin: workgroup. Barrier: group
+  /// sequence. Dispatch records: sequence.
+  std::uint32_t a = 0;
+  /// Instruction: cycles from issue until the result is readable. Wave begin:
+  /// dispatch id.
+  std::uint32_t b = 0;
+  /// Wait thresholds, one byte per counter, 0xFF unconstrained.
+  std::uint32_t wait = 0xFFFFFFFFu;
+  /// Exposed instruction-fetch stall.
+  std::uint32_t fetch = 0;
+  std::uint8_t front_end = 0;
+  /// Wave user priority (s_setprio) after the instruction.
+  std::uint8_t priority = 0;
+  std::uint16_t lines = 0;
+  std::uint64_t pc = 0;
+  /// Reads then writes: file << 24 | count << 16 | index.
+  std::uint32_t regs[12] = {};
+  /// Unfolded workgroup id: waves of different workgroups folded onto one unit share slot numbers.
+  std::uint32_t wg = 0;
+  std::uint32_t reserved = 0;
+};
+#pragma pack(pop)
+static_assert(sizeof(IStreamRecord) == 96);
 
 class DispatchDes;
 
@@ -104,6 +152,22 @@ public:
 
   void write_report(std::string &out) const;
 
+  /// @brief Whether the instruction-stream export samples folded unit @p unit.
+  bool istream_wants(std::size_t unit) const {
+    return istream_ != nullptr && unit % istream_stride_ == 0 && unit / istream_stride_ < istream_units_;
+  }
+  /// @brief Append one record. Callers hold the collector's plane lock.
+  void istream_write(const IStreamRecord &record) {
+    if (istream_ != nullptr)
+      std::fwrite(&record, sizeof(record), 1, istream_);
+  }
+  std::uint32_t istream_next_barrier() { return istream_barriers_++; }
+  /// @brief Unfolded workgroup of the call in progress; set by the plane and the collector.
+  std::uint32_t istream_wg() const { return istream_wg_; }
+  void istream_set_wg(std::uint32_t wg) { istream_wg_ = wg; }
+  /// @brief True the first time @p pc is seen, so its mnemonic is written once.
+  bool istream_first_pc(std::uint64_t pc) { return istream_pcs_.insert(pc).second; }
+
 private:
   void publish(std::uint64_t cycles);
   /// @brief Record what every component had moved, so a dispatch's own traffic
@@ -145,6 +209,16 @@ private:
   std::unordered_map<std::uint64_t, std::vector<std::uint64_t>> activation_base_;
   /// @brief Open trace stream, or null when no trace was asked for.
   std::FILE *trace_ = nullptr;
+  /// @brief Instruction-stream export, or null; see IStreamRecord.
+  std::FILE *istream_ = nullptr;
+  std::uint32_t istream_units_ = 0;
+  /// Sample every Nth folded unit, so workgroups with different work are all represented.
+  std::uint32_t istream_stride_ = 1;
+  std::uint32_t istream_barriers_ = 0;
+  std::uint32_t istream_acquires_ = 0;
+  std::uint32_t istream_ends_ = 0;
+  std::uint32_t istream_wg_ = 0;
+  std::unordered_set<std::uint64_t> istream_pcs_;
   /// @brief The request issue_memory() is waiting for, and its answer.
   std::uint64_t sequence_ = 0;
   std::uint32_t awaited_ = 0;

@@ -241,6 +241,8 @@ Tuning Tuning::parse(const std::string &config_json) {
   }
   tuning.straggler_cycles = read.integer("straggler_cycles", 0);
   tuning.barrier_cycles = read.integer("barrier_cycles", 0);
+  tuning.l2_keep_across_dispatches = read.flag("l2.keep_across_dispatches");
+  tuning.lds_measured_banks = read.flag("lds.measured_banks");
   tuning.barrier_lockstep = read.real("barrier_lockstep", 0.0);
   tuning.issue_occupancy_exponent = read.real("issue_occupancy_exponent", 0.0);
   tuning.stall_exposed_fraction = read.real("stall_exposed_fraction", 1.0);
