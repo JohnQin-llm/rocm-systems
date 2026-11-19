@@ -130,6 +130,11 @@ struct RetiredInstruction {
   RegisterRanges reads;
   /// @brief Registers it writes, which are readable only once its result lands.
   RegisterRanges writes;
+  /// @brief The wavefront s_setprio user priority after this instruction; diagnostic export only.
+  std::uint8_t user_priority = 0;
+  /// @brief Encoding size and first immediate (s_nop count); diagnostic export only.
+  std::uint8_t size_bytes = 4;
+  std::uint16_t immediate = 0;
 };
 
 /// @brief One wavefront's modelled timeline.

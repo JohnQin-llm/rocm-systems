@@ -82,6 +82,8 @@ struct CollectedWave final : rocjitsu::WavefrontState {
   /// placement rather than an index into anything the collector owns.
   std::uint32_t compute_unit = 0;
   std::uint32_t wave_slot = 0;
+  /// @brief Last s_setprio value; s_setprio is functionally a no-op, so it is tracked here for the export.
+  std::uint8_t user_priority = 0;
   std::uint32_t dispatch_id = 0;
   std::uint32_t queue_id = 0;
 
