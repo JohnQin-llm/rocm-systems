@@ -42,6 +42,7 @@ ap.add_argument("--primary", choices=("pred", "comb"), default="pred",
                 help="predictor the pre-registered criteria apply to")
 ap.add_argument("--ref-emu", help="a second emulation of the same items, to compare against (PREREG-addendum-3.md)")
 ap.add_argument("--ref-fits", help="the reference's tunings (default: --fits)")
+ap.add_argument("--ref-config", help="config the reference emulation ran (default: ROCJITSU_CONFIG)")
 ap.add_argument("--ref-name", default="reference")
 ap.add_argument("--defer", type=float,
                 help="also pick with the deferring rule: the primary predictor's pick only when it predicts it "
@@ -71,10 +72,11 @@ base = mr.config_defaults(mr.load_config(
         os.environ.get("ROCJITSU_CONFIG", str(ROOT / "configs/gfx950_mi355x_kmd_timing.json"))))
 
 
-def load_tunings(pattern):
+def load_tunings(pattern, config=None):
+    start = mr.config_defaults(mr.load_config(config)) if config else base
     out = []
     for f in sorted(glob.glob(str(B / pattern))):
-        t = dict(base)
+        t = dict(start)
         t.update(json.loads(Path(f).read_text())["knobs"])
         out.append(t)
     return out
@@ -159,7 +161,7 @@ def load_emu(emu_dir, tunings):
 rows, dropped = load_emu(args.emu, tunings)
 if args.ref_emu:
     # An item is scored only where both emulations ran the kernel hardware ran.
-    ref_rows, _ = load_emu(args.ref_emu, load_tunings(args.ref_fits or args.fits))
+    ref_rows, _ = load_emu(args.ref_emu, load_tunings(args.ref_fits or args.fits, args.ref_config))
     for key in list(rows):
         if key in ref_rows:
             rows[key]["ref"] = ref_rows[key]["pred"]
