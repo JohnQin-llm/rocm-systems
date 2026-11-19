@@ -1956,7 +1956,9 @@ private:
         op.vgpr_msb_role() == VgprMsbRole::None || !wf.num_vgprs())
       return std::nullopt;
     const auto base = wf.vgpr_alloc().base;
-    if (wf.vgpr_bank(false).contains(reg - base, words))
+    // ArchVGPRs above ACCUM_OFFSET arrive here as AccVGPR storage offsets
+    // (unified_vgpr_offset()); check the bank the storage offset falls in.
+    if (wf.unified_vgpr_range_is_allocated(reg - base, words))
       return std::nullopt;
     const auto ref = op.to_register_ref();
     if (!ref || (ref->cls != RegClass::VGPR && ref->cls != RegClass::ACC_VGPR))

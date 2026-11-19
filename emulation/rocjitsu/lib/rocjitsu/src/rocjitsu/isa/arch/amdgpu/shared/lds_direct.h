@@ -51,7 +51,7 @@ inline void execute_lds_direct_load(Instruction &inst, Wavefront &wf, uint32_t d
   }
   auto d = std::make_unique<VectorMemState>(LOCAL_MEM);
   d->wf_size = wf.wf_size();
-  d->dst_reg_base = wf.vgpr_alloc().base + dst;
+  d->dst_reg_base = wf.vgpr_alloc().base + unified_vgpr_offset(wf, dst);
   d->elem_size = type == 2 ? 4 : (type & 1 ? 2 : 1);
   d->num_elems = 1;
   d->sign_extend = type & 4;

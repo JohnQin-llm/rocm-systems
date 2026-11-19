@@ -424,13 +424,22 @@ TEST(DsMemorySnapshot, Cdna4ReturningAtomicRespectsAccumulatorSplit) {
       fx.wf->lds().write32(0, 17);
       const auto result_reg = base + (acc ? ACC_VGPR_OFFSET : 0) + dest;
       fx.cu->write_vgpr(result_reg, 0, 99);
+      // gfx950 (measured on MI355X): v32-v63 alias a0-a31 inside the 64-VGPR
+      // allocation, so v32 is a returning destination that lands in a0.
+      const bool aliased = !acc && dest >= 32 && dest < 64;
+      const auto alias_reg = base + ACC_VGPR_OFFSET + (dest - 32u);
+      if (aliased)
+        fx.cu->write_vgpr(alias_reg, 0, 99);
       auto inst = fx.issue_encoded(cdna4::build_ds(
           cdna4::kDsWrxchgRtnB32, {.acc = acc, .addr = 0, .data0 = 1, .vdst = dest}));
       ASSERT_NE(inst, nullptr);
       LocalMemPipeline pipe;
       ASSERT_EQ(pipe.issue(inst.release(), *fx.wf), VmAccessOutcome::Complete);
-      EXPECT_EQ(fx.wf->lds().read32(0), dest < 32 ? 29u : 17u);
+      EXPECT_EQ(fx.wf->lds().read32(0), dest < 32 || aliased ? 29u : 17u);
       EXPECT_EQ(fx.cu->read_vgpr(result_reg, 0), dest < 32 ? 17u : 99u);
+      if (aliased) {
+        EXPECT_EQ(fx.cu->read_vgpr(alias_reg, 0), 17u);
+      }
     }
   }
 }

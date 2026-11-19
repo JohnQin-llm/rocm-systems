@@ -167,7 +167,7 @@ void flat_calculate_addresses(const FlatInst &inst, amdgpu::Wavefront &wf, Vecto
     } else {
       has_vaddr = inst.lds == 1;
     }
-    uint32_t vbase = wf.vgpr_alloc().base + inst.addr;
+    uint32_t vbase = wf.vgpr_alloc().base + unified_vgpr_offset(wf, inst.addr);
     std::optional<RegisterAccess::VgprReadRegion> vaddr_region;
     if (has_vaddr)
       vaddr_region.emplace(regs.read_vgpr_region(vbase, 1, exec));
@@ -196,7 +196,7 @@ void flat_calculate_addresses(const FlatInst &inst, amdgpu::Wavefront &wf, Vecto
       }
       saddr_val = *saddr;
     }
-    uint32_t vbase = wf.vgpr_alloc().base + inst.addr;
+    uint32_t vbase = wf.vgpr_alloc().base + unified_vgpr_offset(wf, inst.addr);
     auto vaddr_region = regs.read_vgpr_region(vbase, inst.saddr != 0x7F ? 1 : 2, exec);
     for (uint32_t lane = 0; lane < wf.wf_size(); ++lane) {
       if (!(exec & (1ULL << lane)))
@@ -217,7 +217,7 @@ void flat_calculate_addresses(const FlatInst &inst, amdgpu::Wavefront &wf, Vecto
     // unmapped aperture VA range, using the same dword-interleaved swizzle as
     // dedicated SCRATCH ops so the private layout is uniform (and readable by
     // rocm-dbgapi).
-    uint32_t vbase = wf.vgpr_alloc().base + inst.addr;
+    uint32_t vbase = wf.vgpr_alloc().base + unified_vgpr_offset(wf, inst.addr);
     auto vaddr_region = regs.read_vgpr_region(vbase, 2, exec);
     for (uint32_t lane = 0; lane < wf.wf_size(); ++lane) {
       if (!(exec & (1ULL << lane)))
