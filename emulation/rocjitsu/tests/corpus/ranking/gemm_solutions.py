@@ -107,7 +107,7 @@ SHAPES = {  # name: (m, n, k[, dtype]) -- dtype defaults to bfloat16
     "m160_n3584_k1792_f16": (160, 3584, 1792, "float16"),
     "m1024_n768_k2048_f16": (1024, 768, 2048, "float16"),
     # Held-out set 8 (PREREG-addendum-8.md): chosen before any of it was measured.
-    "m11_n5632_k4096": (11, 5632, 4096),   # dropped from held-out set 8: its tuning hangs the GPU
+    # m11_n5632_k4096 was dropped from held-out set 8: its tuning hangs the GPU (PREREG-addendum-8.md).
     "m13_n4608_k4096": (13, 4608, 4096),
     "m28_n3840_k3072": (28, 3840, 3072),
     "m52_n2048_k5120": (52, 2048, 5120),
