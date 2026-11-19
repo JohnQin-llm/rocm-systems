@@ -1609,7 +1609,34 @@ template <typename Inst> inline void execute_with_empty_memory_mask(Inst &inst, 
   return index && (mode & (1u << *index));
 }
 
+/// @brief Map an ArchVGPR number onto the wave's unified register storage.
+/// @details CDNA4 (gfx950) allocates one unified VGPR file per wave and splits it at
+/// ACCUM_OFFSET, but ArchVGPR numbers are not limited to the part below the split:
+/// an ArchVGPR N with ACCUM_OFFSET <= N < allocation names the same physical register
+/// as AccVGPR N - ACCUM_OFFSET. Measured on MI355X with ACCUM_OFFSET 160 of 256:
+/// v200 and v255 hold values written by VALU and by DS loads, and v160 reads back as
+/// a0 (tests/numeric_encoding_regression_test.cpp,
+/// CdnaVectorRegression.ArchVgprAboveAccumOffsetAliasesAccVgprOnGfx950).
+/// Hand-written kernels rely on it, e.g. aiter's fmha_v3 forward kernel keeps its
+/// MFMA operands in v160-v255. AccVGPRs live at ACC_VGPR_OFFSET in the simulator's
+/// storage, so those ArchVGPR numbers are redirected there.
+///
+/// CDNA2 and CDNA3 keep the MI200/MI300 ISA section 3.6.1 rule (an ArchVGPR at or
+/// above ACCUM_OFFSET is out of allocation); no hardware measurement says otherwise.
+/// Offsets already in the AccVGPR range, and waves without a descriptor split, are
+/// unchanged. A multi-register tuple is mapped by its first register, so a tuple
+/// straddling ACCUM_OFFSET is not split.
+inline uint32_t unified_vgpr_offset(const Wavefront &wf, uint32_t vgpr_off) {
+  const uint32_t accum = wf.accum_vgpr_base();
+  if (accum == 0 || vgpr_off < accum || vgpr_off >= ACC_VGPR_OFFSET ||
+      wf.cu().arch() != ROCJITSU_CODE_ARCH_CDNA4)
+    return vgpr_off;
+  return ACC_VGPR_OFFSET + (vgpr_off - accum);
+}
+
 /// @brief Apply the wave's GPR_IDX offset to one logical VALU operand role.
+/// @details The result is a storage offset: ArchVGPRs at or above ACCUM_OFFSET are
+/// mapped onto the AccVGPR storage they alias (unified_vgpr_offset()).
 inline uint32_t apply_gpr_idx(const Wavefront &wf, uint32_t vgpr_off, VgprMsbRole role) {
   const bool cdna2 = wf.cu().arch() == ROCJITSU_CODE_ARCH_CDNA2;
   // Relative indexing applies to architectural VGPRs. Accumulator selectors
@@ -1621,9 +1648,10 @@ inline uint32_t apply_gpr_idx(const Wavefront &wf, uint32_t vgpr_off, VgprMsbRol
                               : vgpr_off;
   // MI200 §3.6.1 redirects an out-of-allocation source to v0.
   if (cdna2 && role != VgprMsbRole::Dst && role != VgprMsbRole::None &&
-      (offset >= ACC_VGPR_OFFSET || !wf.unified_vgpr_range_is_allocated(offset, 1)))
+      (offset >= ACC_VGPR_OFFSET ||
+       !wf.unified_vgpr_range_is_allocated(unified_vgpr_offset(wf, offset), 1)))
     return 0;
-  return offset;
+  return unified_vgpr_offset(wf, offset);
 }
 
 /// @brief ISA-parameterized concrete wavefront with fixed register limits.

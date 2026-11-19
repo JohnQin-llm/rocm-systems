@@ -116,7 +116,8 @@ inline uint32_t apply_gpr_idx_to_mma_base(const Wavefront &wf, uint32_t vb, uint
     return base;
   const uint32_t index = apply_gpr_idx(wf, base - vb, role);
   // Matrix execution reads physical register bases, bypassing the logical VALU source accessor.
-  if (role != VgprMsbRole::Dst && !wf.vgpr_bank(false).contains(index))
+  // ArchVGPRs above ACCUM_OFFSET come back as AccVGPR storage offsets.
+  if (role != VgprMsbRole::Dst && !wf.unified_vgpr_range_is_allocated(index, 1))
     return vb;
   return vb + index;
 }
@@ -170,6 +171,9 @@ uint32_t resolve_acc(uint32_t vb, uint32_t dst, int src2_ev, uint32_t &const_acc
     }
     if (src2_ev >= 256 && src2_ev <= 511) {
       const_acc = ACC_FROM_VGPR;
+      // Known limitation: an ArchVGPR destination at or above ACCUM_OFFSET is
+      // also stored above vb+256 (unified_vgpr_offset()), so with acc_cd=0 and
+      // such a destination a VGPR accumulator is read from the AccVGPR bank.
       // When MFMA writes to AccVGPR bank (acc_cd=1, dst >= vb+256),
       // the accumulator source at encoding 256-511 also refers to
       // AccVGPRs to maintain consistency. This matches gfx942 behavior

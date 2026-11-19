@@ -279,6 +279,19 @@ bool fill_memory(const Instruction &inst, const amdgpu::Wavefront &wf, Collected
   // fully divergent miss.
   retired.lane_addresses = &wave.lane_addresses;
   retired.addresses_known = true;
+  // A two-address access moves both halves through the same banks, one after
+  // the other. Charging only the first set read ds_write2st64_b64, whose two
+  // halves sit 64 rows apart, as half the work it is, and conflict free when
+  // the hardware counts it among the most conflicted accesses of an attention
+  // kernel.
+  retired.second_lane_addresses = nullptr;
+  if (local && vector->ds2_active) {
+    wave.second_lane_addresses.clear();
+    for (std::uint32_t lane = 0; lane < lanes; ++lane)
+      if ((vector->lane_mask & (1ull << lane)) != 0)
+        wave.second_lane_addresses.push_back(vector->ds2_per_lane_addr[lane]);
+    retired.second_lane_addresses = &wave.second_lane_addresses;
+  }
   return true;
 }
 

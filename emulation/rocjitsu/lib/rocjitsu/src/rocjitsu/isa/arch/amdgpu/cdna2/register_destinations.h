@@ -21,7 +21,7 @@ inline bool valu_destinations_in_range(const Instruction &inst, const amdgpu::Wa
         if (index >= amdgpu::ACC_VGPR_OFFSET)
           return false;
       }
-      if (!wf.unified_vgpr_range_is_allocated(index, reg->width))
+      if (!wf.unified_vgpr_range_is_allocated(amdgpu::unified_vgpr_offset(wf, index), reg->width))
         return false;
     } else if (!dst.is_fieldless()) {
       const auto scalar = dst.to_register_ref();

@@ -335,7 +335,7 @@ def fig_validation():
 
 
 def fig_results():
-    s = Svg(1060, 560, "Ranking accuracy on pre-registered held-out sets",
+    s = Svg(1060, 640, "Ranking accuracy on pre-registered held-out sets",
             "Share of variant pairs (hardware gap > 10%) the model orders correctly. Each set was scored once.")
     x0, x1, lo, hi = 330, 960, 50.0, 100.0
 
@@ -346,12 +346,14 @@ def fig_results():
             ("held-out 4 · 8 shapes", 89.0, "blue", None),
             ("held-out 5 · 8 shapes", 87.4, "blue", None),
             ("held-out 6 · 12 shapes", 89.2, "blue", None),
+            ("held-out 8 · 12 shapes", 94.2, "blue", None),
             ("best rule without a model", 68.3, "slate", 60.2),
             ("Triton", None, None, None),
             ("held-out 4 · 6 cases", 78.7, "violet", None),
             ("held-out 5 · 8 cases", 79.4, "violet", None),
             ("  store-policy softmaxes", 90.0, "violet", None),
-            ("best rule without a model", 60.3, "slate", 57.7)]
+            ("held-out 8 · 22 groups", 94.0, "violet", None),
+            ("best rule without a model", 71.6, "slate", 57.7)]
     y = 112
     for v in range(50, 101, 10):
         s.add(f'<line x1="{X(v):.1f}" y1="100" x2="{X(v):.1f}" y2="{100 + 41 * len(rows)}" stroke="#e2e8f0"/>')

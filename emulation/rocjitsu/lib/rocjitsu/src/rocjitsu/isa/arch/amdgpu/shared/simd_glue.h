@@ -653,7 +653,8 @@ inline void write_vop3_true16_dst(const Operand &dst, Wavefront &wf, uint32_t la
     // FMA_F16 and DIV_FIXUP_F16 preserve the other half. Their legacy forms
     // clear the upper half on a low-half write.
     uint32_t off = reg->index + (wf.vgpr_msb_for_role(dst.vgpr_msb_role()) << 8);
-    uint32_t voff = wf.gpr_idx_en() ? apply_gpr_idx(wf, off, dst.vgpr_msb_role()) : off;
+    uint32_t voff = wf.gpr_idx_en() ? apply_gpr_idx(wf, off, dst.vgpr_msb_role())
+                                    : unified_vgpr_offset(wf, off);
     uint32_t idx = wf.vgpr_alloc().base + voff;
     RegisterAccess regs(wf);
     const uint8_t bytes = vop3_true16_dst_byte_mask(wf, dst, dst_hi, cdna_low_dst_zeroes_high);

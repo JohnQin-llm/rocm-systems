@@ -160,14 +160,19 @@ TEST_P(ReturningDsAtomicRouteTest, DirectRouteQualifiesReturningAtomicBeforeWrit
   write_vector(3, 1);
   const auto address = wf_->lds_base() + 8;
   const bool cdna4 = GetParam() == ROCJITSU_CODE_ARCH_CDNA4;
+  // On gfx950 an ArchVGPR at or above ACCUM_OFFSET aliases an AccVGPR and stays inside
+  // the 32-VGPR allocation (measured on MI355X), so the CDNA4 case uses the AccVGPR
+  // window instead: with ACCUM_OFFSET 16, a15 is allocated and a16 is not.
   const uint32_t ordinary_vgprs = cdna4 ? 16 : 32;
-  if (cdna4)
+  if (cdna4) {
     wf_->set_accum_offset(ordinary_vgprs);
+    write_vector(amdgpu::ACC_VGPR_OFFSET + 3, 1); // ACC also selects the data AccVGPR.
+  }
   for (uint32_t dst : {ordinary_vgprs - 1, ordinary_vgprs}) {
     SCOPED_TRACE(dst);
     wf_->lds().write32(address, 41);
-    // ds_add_rtn_u32 vdst, v2, v3
-    const uint32_t opcode = cdna4 ? 0xd8400000 : 0xd8800000;
+    // ds_add_rtn_u32 vdst, v2, v3 (CDNA4: ds_add_rtn_u32 adst, v2, a3)
+    const uint32_t opcode = cdna4 ? 0xd8400000 | (1u << 25) : 0xd8800000;
     const std::array words{opcode, (dst << 24) | 0x0302u};
     auto inst = decoder_->decode_window(words);
     ASSERT_TRUE(inst.succeeded());
@@ -179,7 +184,7 @@ TEST_P(ReturningDsAtomicRouteTest, DirectRouteQualifiesReturningAtomicBeforeWrit
       // Capture a live request, then give the direct router the original, narrower allocation.
       inst = decoder_->decode_window(words);
       ASSERT_TRUE(inst.succeeded());
-      wf_->set_accum_offset(wf_->num_vgprs());
+      wf_->set_accum_offset(8); // a16 fits while ACCUM_OFFSET + 16 < 32.
       inst.value()->execute(*inst.value(), wf_);
       wf_->set_accum_offset(ordinary_vgprs);
       ASSERT_NE(inst.value()->data(), nullptr);

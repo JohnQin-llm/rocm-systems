@@ -285,6 +285,13 @@ Tuning Tuning::parse(const std::string &config_json) {
   tuning.lds_bank_bytes = read.integer("lds.bank_bytes", 4);
   tuning.lds_latency_cycles = read.integer("lds.latency_cycles", kUnnamedLatencyCycles);
   tuning.lds_lanes_per_phase = read.integer("lds.lanes_per_phase", 1);
+  // Optional: absent, the phase model above stays in force and nothing here is
+  // a guess, so these are looked up without being reported as fallbacks.
+  if (machine.count("lds.granule_bytes") != 0) {
+    tuning.lds_granule_bytes = read.integer("lds.granule_bytes", 0);
+    tuning.lds_max_ways = read.integer("lds.max_ways", 64);
+    tuning.lds_cycles_per_way = read.real("lds.cycles_per_way", 1.0);
+  }
 
   tuning.dispatch_start_cycles = read.integer("dispatch.start_cycles", kUnnamedLatencyCycles);
   tuning.dispatch_end_cycles = read.integer("dispatch.end_cycles", kUnnamedLatencyCycles);

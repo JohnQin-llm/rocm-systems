@@ -1448,7 +1448,24 @@ void ComputeUnitCore::qualify_cdna4_memory_destination(Instruction &inst, const 
   }
 }
 
+// Generated memory instructions name their destination by raw ArchVGPR number.
+// Map numbers at or above ACCUM_OFFSET onto the AccVGPR storage they alias, as
+// VALU operands do through apply_gpr_idx(), so a load into v200 and a later VALU
+// read of v200 meet in one register. Idempotent: mapped bases are left alone.
+void ComputeUnitCore::map_unified_memory_destination(Instruction &inst, const Wavefront &wf) {
+  if (wf.accum_vgpr_base() == 0 || !inst.data() ||
+      (inst.data()->tag() != GLOBAL_MEM && inst.data()->tag() != LOCAL_MEM))
+    return;
+  auto &d = *inst.data_as<VectorMemState>();
+  const uint32_t vb = wf.vgpr_alloc().base;
+  if (d.is_load && !d.lds_dst && d.dst_reg_base >= vb)
+    d.dst_reg_base = vb + unified_vgpr_offset(wf, d.dst_reg_base - vb);
+  if (d.ds2_active && d.ds2_dst_reg_base >= vb)
+    d.ds2_dst_reg_base = vb + unified_vgpr_offset(wf, d.ds2_dst_reg_base - vb);
+}
+
 VmAccessOutcome ComputeUnitCore::route_memory_inst(Instruction *inst, Wavefront &wf) {
+  map_unified_memory_destination(*inst, wf);
   if (arch() == ROCJITSU_CODE_ARCH_CDNA4)
     qualify_cdna4_memory_destination(*inst, wf);
   if (arch() == ROCJITSU_CODE_ARCH_RDNA3 || arch() == ROCJITSU_CODE_ARCH_RDNA3_5)

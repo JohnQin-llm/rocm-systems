@@ -1516,6 +1516,8 @@ public:
       nullify_unallocated_memory_result(*inst, wf);
     if (preserve_scc)
       wf.write_scc(saved_scc);
+    if (inst->data())
+      map_unified_memory_destination(*inst, wf);
     if (inst->data() && config_.arch == ROCJITSU_CODE_ARCH_CDNA4)
       qualify_cdna4_memory_destination(*inst, wf);
     if (failure_detail && wf.instruction_execution_error_detail())
@@ -1633,6 +1635,7 @@ protected:
     return wf.unified_vgpr_range_is_allocated(base - wf.vgpr_alloc().base, count);
   }
   void qualify_cdna4_memory_destination(Instruction &inst, const Wavefront &wf);
+  void map_unified_memory_destination(Instruction &inst, const Wavefront &wf);
 
   /// @brief Tell the plugin group what the memory system is about to be asked
   ///        for, once routing has settled.

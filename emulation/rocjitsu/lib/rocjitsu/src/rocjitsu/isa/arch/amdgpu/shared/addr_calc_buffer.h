@@ -429,7 +429,7 @@ void mubuf_calculate_addresses(const MubufInst &inst, amdgpu::Wavefront &wf, Vec
     gfx10_buffer_apply_swizzle(d, srd1, srd3, exec, base_addr, soffset_val);
   else
     rdna_buffer_apply_swizzle(d, srd1, srd3, inst.idxen != 0, exec, base_addr, soffset_val);
-  uint32_t vgpr_base = wf.vgpr_alloc().base + inst.vaddr;
+  uint32_t vgpr_base = wf.vgpr_alloc().base + unified_vgpr_offset(wf, inst.vaddr);
   std::optional<RegisterAccess::VgprReadRegion> vaddr_region;
   if (inst.idxen || inst.offen) {
     uint32_t reg_count = (inst.idxen && inst.offen) ? 2 : 1;
@@ -555,7 +555,7 @@ void mtbuf_calculate_addresses(const MtbufInst &inst, amdgpu::Wavefront &wf, Vec
     gfx10_buffer_apply_swizzle(d, srd1, srd3, exec, base_addr, soffset_val);
   else
     rdna_buffer_apply_swizzle(d, srd1, srd3, inst.idxen != 0, exec, base_addr, soffset_val);
-  uint32_t vgpr_base = wf.vgpr_alloc().base + inst.vaddr;
+  uint32_t vgpr_base = wf.vgpr_alloc().base + unified_vgpr_offset(wf, inst.vaddr);
   std::optional<RegisterAccess::VgprReadRegion> vaddr_region;
   if (inst.idxen || inst.offen) {
     uint32_t reg_count = (inst.idxen && inst.offen) ? 2 : 1;

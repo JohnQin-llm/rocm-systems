@@ -215,3 +215,66 @@ environment, but not across binaries installed at different paths.
 21-26% and the 90th percentile is 50-60%. That matches the development
 families (20-25%). The tail, not the median, is what keeps the model a ranking
 tool rather than a stopwatch.
+
+## Results (MI355X, held-out set 8 of PREREG-addendum-8: the new predictor on every bench)
+
+N is `config_hw4.json` on the emulator with the LDS-permute fix and the measured
+overlay: N_G ranks GEMM with the hw4R fits, N_T ranks Triton with the hw4A fits,
+N_A predicts absolute time with the hw4A fits. O is the previous reference
+(`config_b1_wb.json`; prereg8c fits for ranking, prereg7c for absolute time).
+12 hipBLASLt shapes (180 solutions) and 22 Triton groups (288 variants), of which
+LayerNorm and SwiGLU are families the model had never seen. Scored once, on
+2026-11-19.
+
+| | pairwise accuracy | O | best non-timing baseline | hardware ceiling |
+|---|---|---|---|---|
+| hipBLASLt, 845 stable pairs | **94.2%** [92.5, 95.7] | 90.7% [88.6, 92.5] | instructions 67.1% | 98.5% |
+| Triton, 1315 stable pairs | **94.0%** [92.7, 95.2] | 81.7% [79.6, 83.8] | instructions 71.6% | 98.2% |
+
+| pick regret | median | mean | worst | <= Default |
+|---|---|---|---|---|
+| hipBLASLt, N_G | 3.7% | 5.0% | 17.3% | 6/10 |
+| hipBLASLt, O | 7.6% | 9.9% | 41.6% | 6/10 |
+| hipBLASLt Default | 3.0% | 11.7% | 41.6% | |
+| Triton, N_T | 0.3% | 4.9% | 25.8% | |
+| Triton, O | 4.9% | 13.7% | 68.3% | |
+
+| criterion | result | |
+|---|---|---|
+| H1 hipBLASLt accuracy, CI lower bound > 67.1% | pass | 92.5% |
+| H2 hipBLASLt N_G minus O, CI lower bound > 0 | pass | +3.6 [+1.7, +5.6] |
+| H3 hipBLASLt mean regret minus Default, CI upper bound < 0 | **fail** | -6.6 [-16.8, +3.0] |
+| H4 Triton accuracy, CI lower bound > 71.6% | pass | 92.7% |
+| H5 Triton N_T minus O, CI lower bound > 0 | pass | +12.2 [+10.2, +14.3] |
+| A1 pooled median absolute error <= 20% | pass | 12.6% |
+| A2 N_A minus O_A, mean abs. log2 ratio, CI upper bound < 0 | pass | -0.146 [-0.198, -0.093] |
+
+H3 fails on width, not on direction: the mean regret is less than half of
+Default's (5.0% against 11.7%), but over 10 groups the bootstrap interval still
+reaches +3.0. Default's median (3.0%) is lower than the model's (3.7%); the model
+wins on the tail (worst 17.3% against 41.6%). The base PREREG.md secondary check,
+median regret no worse than the best baseline and Default, fails by the same
+0.7 point.
+
+**Absolute time (N_A, every item).**
+
+| family | n | median abs. error | p90 | within 25% | O median |
+|---|---|---|---|---|---|
+| hipBLASLt GEMM | 180 | 16.2% | 38.8% | 70.0% | 19.4% |
+| Triton matmul | 48 | 13.2% | 37.8% | 72.9% | 24.8% |
+| Triton softmax | 36 | 16.4% | 29.9% | 75.0% | 27.2% |
+| attention | 36 | 11.2% | 32.8% | 83.3% | 25.9% |
+| RMSNorm | 24 | 8.2% | 13.8% | 100.0% | 48.5% |
+| fp8 matmul | 48 | 9.7% | 22.5% | 89.6% | 32.2% |
+| LayerNorm (never seen) | 48 | 9.4% | 20.9% | 97.9% | 28.9% |
+| SwiGLU (never seen) | 48 | 14.4% | 30.7% | 68.8% | 23.0% |
+| pooled | 468 | **12.6%** | 33.6% | | 24.0% |
+
+The two unseen families land inside the range of the seen ones.
+
+**Deviations from the addendum, all disclosed before scoring.**
+
+- Measurement nodes (three amendments). hipBLASLt tuning hung GPUs on node g40, so enumeration, selection and 32 of the 36 (run, shape) hardware units ran on node g53; the remaining four units (run 2 of m52_n2048_k5120 and m1536_n512_k3072, run 3 of m28_n3840_k3072 and m704_n1024_k2048) ran on g40. On g40, three repeats of one g53 pick (m52_n2048_k5120 Default) fell within the g53 run-to-run spread (26.8-27.9 us against 25.2-27.0 us).
+- `gemm_solutions.py` changed after the addendum fixed its hash (ad08ef2e...; now 17ddd5ab...). The one change is in the enumeration step: a shape whose tuning leaves no candidate list is reported and skipped instead of asserting. The timing path is unchanged, and all 12 shapes enumerated, so neither the candidates nor the measurements are affected.
+- `selected.json` lists Default twice for m704_n1024_k2048 and m1536_n512_k3072; those groups have 15 distinct solutions, and every scorer reads files, so nothing is counted twice.
+- Two GEMM items are dropped from ranking: Default of m704_n1024_k2048 for N_G and Default of m1536_n512_k3072 for O. Under the emulator hipBLASLt dispatched two kernels for them (with a GSU reduction), on hardware one, in all three runs; the identity check excludes them. Default regret is therefore compared on 10 groups.

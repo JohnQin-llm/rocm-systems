@@ -394,6 +394,22 @@ AccessCost lds_access(const Tuning &tuning, const RetiredInstruction &retired) {
   }
 
   const std::uint64_t banks = std::max<std::uint64_t>(1, tuning.lds_banks);
+  // A cross-lane permute (ds_bpermute_b32, ds_permute_b32, ds_swizzle_b32)
+  // goes through the local data share's crossbar but addresses lanes, not
+  // memory, so it has no bank to conflict on and the functional side reports no
+  // addresses for it. Charging it the widest conflict the wavefront could
+  // produce -- 64 passes each -- made the attention variants that reduce with
+  // bpermute read as LDS bound when on MI355X they are the fastest.
+  if (!has_addresses(retired) && retired.mnemonic != nullptr &&
+      (retired.mnemonic->find("permute") != std::string::npos ||
+       retired.mnemonic->find("swizzle") != std::string::npos)) {
+    cost.issue_cycles =
+        tuning.lds_granule_bytes != 0
+            ? std::max<std::uint64_t>(1, static_cast<std::uint64_t>(tuning.lds_cycles_per_way + 0.5))
+            : 1;
+    cost.latency_cycles = tuning.lds_latency_cycles + cost.issue_cycles;
+    return cost;
+  }
   if (!has_addresses(retired)) {
     // Charge the widest conflict the wavefront could have produced, and charge
     // it *here* rather than in global memory: losing the addresses does not
@@ -403,8 +419,16 @@ AccessCost lds_access(const Tuning &tuning, const RetiredInstruction &retired) {
                                           std::max<std::uint64_t>(1, tuning.lds_lanes_per_phase));
     cost.issue_cycles = std::max<std::uint64_t>(1, phases) * banks;
   } else {
-    cost.issue_cycles = lds_conflict_cycles(*retired.lane_addresses, retired.bytes_per_lane, banks,
-                                            tuning.lds_bank_bytes, tuning.lds_lanes_per_phase);
+    const auto conflict = [&](const std::vector<std::uint64_t> &addresses) {
+      if (tuning.lds_granule_bytes != 0)
+        return lds_granule_cycles(addresses, retired.bytes_per_lane, banks, tuning.lds_granule_bytes,
+                                  tuning.lds_max_ways, tuning.lds_cycles_per_way);
+      return lds_conflict_cycles(addresses, retired.bytes_per_lane, banks, tuning.lds_bank_bytes,
+                                 tuning.lds_lanes_per_phase);
+    };
+    cost.issue_cycles = conflict(*retired.lane_addresses);
+    if (retired.second_lane_addresses != nullptr)
+      cost.issue_cycles += conflict(*retired.second_lane_addresses);
   }
   // The conflict passes happen after the access reaches the array, so they
   // extend the return rather than overlapping it.

@@ -256,6 +256,11 @@ struct Tuning {
   std::uint64_t lds_bank_bytes = 4;
   std::uint64_t lds_latency_cycles = 10000;
   std::uint64_t lds_lanes_per_phase = 1;
+  /// @brief Granule model of the local data share (lds_granule_cycles());
+  ///        zero keeps the phase model.
+  std::uint64_t lds_granule_bytes = 0;
+  std::uint64_t lds_max_ways = 64;
+  double lds_cycles_per_way = 1.0;
 
   std::uint64_t dispatch_start_cycles = 10000;
   std::uint64_t dispatch_end_cycles = 10000;

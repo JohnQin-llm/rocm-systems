@@ -173,7 +173,7 @@ void ds_calculate_addresses(const DsInst &inst, amdgpu::Wavefront &wf, VectorMem
   const uint32_t ds_base = wf.lds_base();
   uint32_t offset = (static_cast<uint32_t>(inst.offset1) << 8) | inst.offset0;
   RegisterAccess regs(cu);
-  uint32_t addr = wf.vgpr_alloc().base + inst.addr;
+  uint32_t addr = wf.vgpr_alloc().base + unified_vgpr_offset(wf, inst.addr);
   addr = wf.ds_source_vgpr(addr);
   auto addr_region = regs.read_vgpr_region(addr, 1, exec);
   auto maybe_addresses = addr_region.lanes();

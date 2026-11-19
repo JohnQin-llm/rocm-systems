@@ -103,7 +103,10 @@ MATMUL_SHAPES = {"mm512": (512, 512, 512), "mm1024": (1024, 1024, 1024),
                  "mm320x2560x1280": (320, 2560, 1280), "mm896x896x1792": (896, 896, 1792),
                  "mm2048x256x1536": (2048, 256, 1536),
                  # Held-out set 5 (PREREG-addendum-5.md)
-                 "mm448x1792x896": (448, 1792, 896), "mm1280x512x3072": (1280, 512, 3072)}
+                 "mm448x1792x896": (448, 1792, 896), "mm1280x512x3072": (1280, 512, 3072),
+                 # Held-out set 8 (PREREG-addendum-8.md)
+                 "mm640x2304x1280": (640, 2304, 1280), "mm1792x768x2560": (1792, 768, 2560),
+                 "mm2560x1536x768": (2560, 1536, 768)}
 SOFTMAX_SHAPES = {"sm4096x1024": (4096, 1024), "sm1024x4096": (1024, 4096), "sm8192x512": (8192, 512),
                   # Held-out (PREREG-addendum-1.md)
                   "sm2048x2048": (2048, 2048), "sm16384x256": (16384, 256),
@@ -115,13 +118,17 @@ SOFTMAX_SHAPES = {"sm4096x1024": (4096, 1024), "sm1024x4096": (1024, 4096), "sm8
                   "sm2560x1792": (2560, 1792), "sm12288x640": (12288, 640), "sm768x5120": (768, 5120),
                   # Held-out set 5 (PREREG-addendum-5.md); variants also choose the store policy
                   "sm5120x1024": (5120, 1024), "sm2048x3584": (2048, 3584), "sm10240x384": (10240, 384),
-                  "sm3584x2048": (3584, 2048), "sm1280x4608": (1280, 4608), "sm6144x896": (6144, 896)}
+                  "sm3584x2048": (3584, 2048), "sm1280x4608": (1280, 4608), "sm6144x896": (6144, 896),
+                  # Held-out set 8 (PREREG-addendum-8.md); variants also choose the store policy
+                  "sm4608x1536": (4608, 1536), "sm1792x2816": (1792, 2816), "sm9216x768": (9216, 768)}
 HELDOUT_TRITON = ["mm768", "mm128x2048x2048", "sm2048x2048", "sm16384x256"]
 HELDOUT2_TRITON = ["mm256x3072x1024", "mm1536x640x512", "sm4096x512", "sm1024x3072"]
 HELDOUT3_TRITON = ["mm384x1536x1536", "mm1024x384x2048", "mm192x4096x512", "sm3072x768", "sm6144x1280",
                    "sm1536x2560"]
 HELDOUT4_TRITON = ["mm320x2560x1280", "mm896x896x1792", "mm2048x256x1536", "sm2560x1792", "sm12288x640",
                    "sm768x5120"]
+HELDOUT8_TRITON = ["mm640x2304x1280", "mm1792x768x2560", "mm2560x1536x768", "sm4608x1536", "sm1792x2816",
+                   "sm9216x768"]
 HELDOUT5_TRITON = ["mm448x1792x896", "mm1280x512x3072", "sm5120x1024", "sm2048x3584", "sm10240x384",
                    "sm3584x2048", "sm1280x4608", "sm6144x896"]
 
@@ -136,7 +143,7 @@ def cases():
     cgrid = list(itertools.product((1, 2, 4, 8, 16), (1, 2, 4, 8), range(len(STORE_POLICIES))))
     for name in SOFTMAX_SHAPES:
         rng = random.Random(f"triton-{name}")
-        if name in HELDOUT3_TRITON or name in HELDOUT4_TRITON or name in HELDOUT5_TRITON:
+        if name in HELDOUT3_TRITON or name in HELDOUT4_TRITON or name in HELDOUT5_TRITON or name in HELDOUT8_TRITON:
             out[name] = [f"w{w}_r{r}_c{c}" for w, r, c in rng.sample(cgrid, 12)]
         else:
             out[name] = [f"w{w}_r{r}" for w, r in rng.sample(sgrid, 12)]
@@ -148,12 +155,14 @@ def parse(variant):
 
 
 def build(case, variant):
-    g = torch.Generator(device="cuda").manual_seed(0)
+    # Inputs on the host and the reference on the host: under the emulator both
+    # are emulated device work and cost more than the kernel being timed.
+    g = torch.Generator().manual_seed(0)
     v = parse(variant)
     if case in MATMUL_SHAPES:
         m, n, k = MATMUL_SHAPES[case]
-        a = torch.randn(m, k, device="cuda", dtype=torch.bfloat16, generator=g)
-        b = torch.randn(k, n, device="cuda", dtype=torch.bfloat16, generator=g)
+        a = torch.randn(m, k, dtype=torch.bfloat16, generator=g).cuda()
+        b = torch.randn(k, n, dtype=torch.bfloat16, generator=g).cuda()
         c = torch.empty(m, n, device="cuda", dtype=torch.bfloat16)
         grid = (triton.cdiv(m, v["m"]) * triton.cdiv(n, v["n"]),)
 
@@ -163,10 +172,11 @@ def build(case, variant):
                                        BLOCK_K=v["k"], GROUP_M=8, num_warps=v["w"], num_stages=v["s"])
 
         def err():
-            return (c.float() - (a.float() @ b.float())).abs().max().item() / max(1.0, (a.float() @ b.float()).abs().max().item())
+            ref = a.cpu().float() @ b.cpu().float()
+            return (c.cpu().float() - ref).abs().max().item() / max(1.0, ref.abs().max().item())
         return fn, err
     rows, cols = SOFTMAX_SHAPES[case]
-    x = torch.randn(rows, cols, device="cuda", dtype=torch.bfloat16, generator=g)
+    x = torch.randn(rows, cols, dtype=torch.bfloat16, generator=g).cuda()
     y = torch.empty_like(x)
     block = triton.next_power_of_2(cols)
     grid = (triton.cdiv(rows, v["r"]),)
@@ -178,7 +188,7 @@ def build(case, variant):
         return softmax_kernel[grid](y, x, rows, cols, x.stride(0), ROWS=v["r"], BLOCK=block, num_warps=v["w"])
 
     def err():
-        return (y.float() - torch.softmax(x.float(), dim=1)).abs().max().item()
+        return (y.cpu().float() - torch.softmax(x.cpu().float(), dim=1)).abs().max().item()
     return fn, err
 
 

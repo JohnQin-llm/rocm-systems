@@ -238,6 +238,7 @@ Pairwise accuracy is how often the model orders two variants correctly when hard
 | 4 | **4.0%** / 9.2% | 27.9% / 20.0% |
 | 5 | 14.2% / 17.0% | 11.2% / 12.3% |
 | 6 | **0.8%** / 8.0% | 12.4% / 12.6% |
+| 8 | 3.7% / **5.0%** | 3.0% / 11.7% |
 
 ➡️ **Usually right, occasionally confidently wrong.** Use it to shortlist, then confirm on hardware.
 
@@ -317,8 +318,8 @@ Bytes written back by the release at the end of a softmax kernel, emulator again
 
 | | status |
 |---|---|
-| ⏱ absolute runtime | median error 18–24% on the corpus |
-| 🎲 final pick | mean regret is not reliably better than Default (long tail) |
+| ⏱ absolute runtime | median error 12.6% on held-out 8 (90th percentile 33.6%); hipBLASLt GEMM is the weakest family at 16.2% |
+| 🎲 final pick | mean regret is not reliably better than Default (held-out 8: 5.0% against 11.7%, but the CI still crosses 0) |
 | 💾 store / cache policy | hardware cost changes regime around 64–80 MB of working set; one flush scale cannot express it (held-out 5, H3 failed) |
 | 🧮 GEMM LDS / MFMA weights | poorly identified; a listwise loss overfit them (held-out 6, H1 / H2 failed) |
 | 🌐 other GPUs | calibrated on MI355X only |
@@ -388,6 +389,7 @@ python3 $T/rank_fit.py --dev gemm:hw:emu triton:triton_hw:triton_emu --fits "sta
 | 4 | second calibration stage | GEMM all ✅ (+7.1), Triton gain ❌ |
 | 5 | flush recalibrated on the size sweep | target H3 ❌ (+1.0, not significant) |
 | 6 | listwise loss + defer to Default | accuracy ✅, regret ❌ |
+| 8 | LDS-permute fix, measured overlay, absolute-time fit | H1 ✅ H2 ✅ H3 ❌ H4 ✅ H5 ✅ A1 ✅ A2 ✅ (GEMM +3.6, Triton +12.2; absolute median error 12.6%) |
 
 Failures are reported, not retried.
 

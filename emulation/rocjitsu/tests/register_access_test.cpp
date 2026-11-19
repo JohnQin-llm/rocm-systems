@@ -1559,6 +1559,13 @@ TEST(RegisterAccessTest, CdnaMemoryRequiresTheWholeReturningDestination) {
           const uint32_t result = dst + (acc ? amdgpu::ACC_VGPR_OFFSET : 0);
           for (uint32_t i = 0; i < words; ++i)
             fx.cu->write_vgpr(fx.vgpr_base() + result + i, 0, sentinel);
+          // gfx950 (measured on MI355X): v8 is a0 inside the 16-VGPR allocation, so
+          // the returning atomic completes into a0. The load tuple v[6:9] straddles
+          // ACCUM_OFFSET, which the simulator does not split, and stays suppressed.
+          const bool aliased = arch == ROCJITSU_CODE_ARCH_CDNA4 && !acc && atomic && !in_range;
+          const uint32_t alias_reg = fx.vgpr_base() + amdgpu::ACC_VGPR_OFFSET;
+          if (aliased)
+            fx.cu->write_vgpr(alias_reg, 0, sentinel);
           // global_load_dwordx4 or global_atomic_add (glc), followed by s_waitcnt vmcnt(0).
           fx.gpu_mem.write32(code, atomic ? 0xdd098000 : 0xdc5c8000);
           fx.gpu_mem.write32(code + 4,
@@ -1569,9 +1576,12 @@ TEST(RegisterAccessTest, CdnaMemoryRequiresTheWholeReturningDestination) {
           for (uint32_t i = 0; i < words; ++i)
             EXPECT_EQ(fx.cu->read_vgpr_storage(fx.vgpr_base() + result + i, 0),
                       in_range ? 5 + i : sentinel);
+          if (aliased) {
+            EXPECT_EQ(fx.cu->read_vgpr_storage(alias_reg, 0), 5u);
+          }
           fx.cu->l1_vector().flush_all();
           fx.l2.flush_all();
-          EXPECT_EQ(fx.gpu_mem.read32(data), atomic && in_range ? 6u : 5u);
+          EXPECT_EQ(fx.gpu_mem.read32(data), atomic && (in_range || aliased) ? 6u : 5u);
         }
       }
     }
@@ -1596,15 +1606,21 @@ TEST(RegisterAccessTest, CdnaValuAllocationRedirectsSourcesAndSuppressesEveryRes
       fx.wf->set_vcc(0);
       fx.cu->write_vgpr(fx.vgpr_base(), 0, 0xcafef00du);
       fx.cu->write_vgpr(fx.vgpr_base() + 12, 0, 0x5eed5eedu);
+      // gfx950 (measured on MI355X): with ACCUM_OFFSET 8 of 16, v12 is a4, so the
+      // source reads a4 and the result is written there instead of being suppressed.
+      const bool aliased = split && arch == ROCJITSU_CODE_ARCH_CDNA4;
+      const uint32_t a4 = fx.vgpr_base() + amdgpu::ACC_VGPR_OFFSET + 4;
+      fx.cu->write_vgpr(a4, 0, 0xa4a4a4a4u);
       fx.gpu_mem.write32(code, 0x7e02030cu);     // v_mov_b32 v1, v12
       fx.gpu_mem.write32(code + 4, 0x32180501u); // v_add_co_u32 v12, vcc, v1, v2
       ASSERT_TRUE(fx.cu->step());
-      EXPECT_EQ(fx.cu->read_vgpr(fx.vgpr_base() + 1, 0), 0xcafef00du);
+      EXPECT_EQ(fx.cu->read_vgpr(fx.vgpr_base() + 1, 0), aliased ? 0xa4a4a4a4u : 0xcafef00du);
       fx.cu->write_vgpr(fx.vgpr_base() + 1, 0, 0xffffffffu);
       fx.cu->write_vgpr(fx.vgpr_base() + 2, 0, 1);
       ASSERT_TRUE(fx.cu->step());
       EXPECT_EQ(fx.cu->read_vgpr(fx.vgpr_base() + 12, 0), 0x5eed5eedu);
-      EXPECT_EQ(fx.wf->vcc(), 0u);
+      EXPECT_EQ(fx.cu->read_vgpr(a4, 0), aliased ? 0u : 0xa4a4a4a4u);
+      EXPECT_EQ(fx.wf->vcc(), aliased ? 1u : 0u);
     }
   }
 }

@@ -2,6 +2,7 @@
 """Run the Triton benchmark on hardware (guarded, one GPU per run) or under rocjitsu.
 
   run_triton.py hw  OUTDIR RUN:HIP [RUN:HIP ...]
+  run_triton.py hw  OUTDIR RUNS@GPU,GPU,... [CASE ...]   (group units spread over the GPUs)
   run_triton.py emu OUTDIR JOBS
 
 Emulator records also carry the executed-instruction and DRAM-byte totals of
@@ -32,12 +33,14 @@ def tb(case, variant, m, out):
             "--mode", m, "--out", str(out)] + (["--warmup", "1", "--samples", "3"] if m == "emu" else [])
 
 
-def hw_run(run_hip):
+def hw_run(run_hip, only_case=None):
     run, hip = run_hip
     d = out_root / f"run{run}"
     d.mkdir(parents=True, exist_ok=True)
     retried = failed = 0
     for case, var in jobs:
+        if only_case is not None and case != only_case:
+            continue
         out, guard = d / f"{case}__{var}.json", d / f"{case}__{var}.guard.json"
         if out.exists() and guard.exists() and not json.loads(guard.read_text())["contended"]:
             continue
@@ -54,6 +57,21 @@ def hw_run(run_hip):
             failed += 1
             out.unlink(missing_ok=True)
     return run, retried, failed
+
+
+def spread(groups, runs, gpus):
+    """RUNS@GPU,GPU,...: every (run, group) unit on one GPU, units spread over all GPUs.
+
+    A group's variants are timed back to back on one GPU within a run, so the
+    within-group comparison never mixes GPUs; a group's runs land on different
+    GPUs (offsets 0, 3, 6, ... modulo the GPU count), which are distinct while
+    the GPU count exceeds 3 * (runs - 1).
+    """
+    per_gpu = {g: [] for g in gpus}
+    for run in range(1, runs + 1):
+        for index, group in enumerate(groups):
+            per_gpu[gpus[(index + 3 * (run - 1)) % len(gpus)]].append((run, group))
+    return per_gpu
 
 
 def emu_one(job):
@@ -89,7 +107,24 @@ def emu_one(job):
     print(f"{case} {var} rc={rc} {rec['emu_wall_s']:.0f}s event_us={rec.get('event_us')}", flush=True)
 
 
-if mode == "hw":
+if mode == "hw" and "@" in sys.argv[3]:
+    n_runs, gpu_list = sys.argv[3].split("@")
+    only = set(sys.argv[4:])
+    groups = sorted({c for c, _ in jobs if not only or c in only})
+    plan = spread(groups, int(n_runs), [int(g) for g in gpu_list.split(",")])
+
+    def gpu_worker(gpu):
+        total = [0, 0]
+        for run, group in plan[gpu]:
+            _, retried, failed = hw_run((run, gpu), only_case=group)
+            total[0] += retried
+            total[1] += failed
+        return gpu, total
+
+    with ThreadPoolExecutor(max_workers=len(plan)) as pool:
+        for gpu, (retried, failed) in pool.map(gpu_worker, list(plan)):
+            print(f"gpu{gpu}: {retried} contended attempts re-measured, {failed} never clean", flush=True)
+elif mode == "hw":
     runs = [tuple(int(x) for x in s.split(":")) for s in sys.argv[3:]]
     with ThreadPoolExecutor(max_workers=len(runs)) as pool:
         for run, retried, failed in pool.map(hw_run, runs):

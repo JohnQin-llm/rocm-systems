@@ -37,7 +37,9 @@ bool Wavefront::valu_destinations_allocated(const Instruction &inst) const {
     const bool acc = ref->cls == RegClass::ACC_VGPR;
     const uint32_t start =
         acc ? ACC_VGPR_OFFSET + ref->index : apply_gpr_idx(*this, ref->index, op->vgpr_msb_role());
-    if (!vgpr_bank(acc).contains(start, ref->width))
+    // apply_gpr_idx() has already mapped ArchVGPRs above ACCUM_OFFSET into the
+    // AccVGPR storage they alias, so check the bank the storage offset falls in.
+    if (!unified_vgpr_range_is_allocated(start, ref->width))
       return false;
   }
   return true;
@@ -50,7 +52,7 @@ bool Wavefront::memory_destination_out_of_range(const Instruction &inst) const {
     return false;
   for (int i = 0; i < inst.num_dst_operands(); ++i) {
     const auto reg = inst.dst_operand(i)->decoded_vgpr();
-    if (reg && !unified_vgpr_range_is_allocated(reg->index, reg->width))
+    if (reg && !unified_vgpr_range_is_allocated(unified_vgpr_offset(*this, reg->index), reg->width))
       return true;
   }
   return false;

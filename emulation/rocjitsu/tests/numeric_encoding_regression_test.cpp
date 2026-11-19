@@ -190,6 +190,8 @@ TEST_P(CdnaVectorRegression, ValuHonorsBothRegisterQuotasAndAllDestinations) {
   wave_ = cu_->dispatch_wf(0, 0, 16, 32);
   ASSERT_NE(wave_, nullptr);
   wave_->set_accum_offset(24); // v0-v23 plus a0-a7.
+  // gfx950 (measured on MI355X): v24-v31 alias a0-a7 instead of leaving the allocation.
+  const bool aliases = std::get<0>(GetParam()) == ROCJITSU_CODE_ARCH_CDNA4;
   constexpr uint32_t marker = 0xdeadbeef;
   const auto read = [&](unsigned reg) {
     return cu_->read_vgpr_storage(wave_->vgpr_alloc().base + reg, 0);
@@ -203,7 +205,11 @@ TEST_P(CdnaVectorRegression, ValuHonorsBothRegisterQuotasAndAllDestinations) {
   put(24, marker);
   ASSERT_NO_FATAL_FAILURE(execute({0x7e300300, 0})); // v_mov_b32 v24, v0
   EXPECT_EQ(read(24), marker);
-  ASSERT_NO_FATAL_FAILURE(execute({0x7e020318, 0})); // v_mov_b32 v1, v24 reads v0.
+  if (aliases) {
+    EXPECT_EQ(read(256 + 0), 1u); // The write landed in a0.
+  }
+  // v_mov_b32 v1, v24 reads v0 (gfx90a, gfx942) or a0, which now holds v0 (gfx950).
+  ASSERT_NO_FATAL_FAILURE(execute({0x7e020318, 0}));
   EXPECT_EQ(read(1), 1u);
   put(256 + 1, marker);
   put(256 + 12, marker);
@@ -223,12 +229,52 @@ TEST_P(CdnaVectorRegression, ValuHonorsBothRegisterQuotasAndAllDestinations) {
   put(0, 0x3f800000); // v0 and v1 are 1.0, stale v24 holds 2.0.
   put(1, 0x3f800000);
   put(24, 0x40000000);
-  // v_mfma_f32_16x16x4f32 v[4:7], va, vb, 0. Both out-of-range inputs select v0.
+  put(256 + 0, 0x40400000); // a0 holds 3.0.
+  // v_mfma_f32_16x16x4f32 v[4:7], va, vb, 0. On gfx90a and gfx942 both out-of-range
+  // inputs select v0 (4.0); on gfx950 v24 reads its alias a0 (4 x 3.0 = 12.0).
   for (const auto source : {0x02020300u, 0x02020318u, 0x02023100u}) {
     put(4, marker);
     ASSERT_NO_FATAL_FAILURE(execute({0xd3c50004, source}));
-    EXPECT_EQ(read(4), 0x40800000u);
+    EXPECT_EQ(read(4), aliases && source != 0x02020300u ? 0x41400000u : 0x40800000u);
   }
+}
+
+// Measured on MI355X (gfx950) with ACCUM_OFFSET 160 of 256 VGPRs: an ArchVGPR at or
+// above ACCUM_OFFSET is the AccVGPR it aliases. VALU writes to v200 and v255 read back,
+// a DS load into v200 reads back, and a write to v160 reads back as a0. The aiter
+// fmha_v3 forward kernel keeps its MFMA operands in v160-v255 and depends on it.
+// gfx90a and gfx942 keep the ISA section 3.6.1 rule: the write is suppressed and the
+// read selects v0. The DS-load case is covered by
+// DsMemorySnapshot.Cdna4ReturningAtomicRespectsAccumulatorSplit.
+TEST_P(CdnaVectorRegression, ArchVgprAboveAccumOffsetAliasesAccVgprOnGfx950) {
+  wave_->halt();
+  wave_ = cu_->dispatch_wf(0, 0, 16, 32);
+  ASSERT_NE(wave_, nullptr);
+  wave_->set_accum_offset(24); // v0-v23 plus a0-a7; on gfx950 v24-v31 are a0-a7.
+  const bool gfx950 = std::get<0>(GetParam()) == ROCJITSU_CODE_ARCH_CDNA4;
+  constexpr uint32_t marker = 0xdeadbeef;
+  const auto read = [&](unsigned reg) {
+    return cu_->read_vgpr_storage(wave_->vgpr_alloc().base + reg, 0);
+  };
+  put(0, 0x1234);
+  for (unsigned reg : {28u, 31u, 256u + 4, 256u + 7})
+    put(reg, marker);
+  // A VALU write to v28 lands in a4 on gfx950 and is suppressed elsewhere.
+  ASSERT_NO_FATAL_FAILURE(execute({0x7e380300, 0})); // v_mov_b32 v28, v0
+  EXPECT_EQ(read(28), marker);
+  EXPECT_EQ(read(256 + 4), gfx950 ? 0x1234u : marker);
+  ASSERT_NO_FATAL_FAILURE(execute({0xd3d84002, 0x18000104})); // v_accvgpr_read_b32 v2, a4
+  EXPECT_EQ(read(2), gfx950 ? 0x1234u : marker);
+  // A VALU read of v28 returns a4 on gfx950 and v0 elsewhere.
+  put(256 + 4, 0x5678);
+  ASSERT_NO_FATAL_FAILURE(execute({0x7e02031c, 0})); // v_mov_b32 v1, v28
+  EXPECT_EQ(read(1), gfx950 ? 0x5678u : 0x1234u);
+  // The last register of the allocation, v31, is a7.
+  ASSERT_NO_FATAL_FAILURE(execute({0x7e3e0300, 0})); // v_mov_b32 v31, v0
+  ASSERT_NO_FATAL_FAILURE(execute({0x7e06031f, 0})); // v_mov_b32 v3, v31
+  EXPECT_EQ(read(31), marker);
+  EXPECT_EQ(read(256 + 7), gfx950 ? 0x1234u : marker);
+  EXPECT_EQ(read(3), 0x1234u);
 }
 
 TEST_P(Cdna2VectorRegression, LegacyIntegerMadAndPackedSaturation) {

@@ -106,9 +106,23 @@ SHAPES = {  # name: (m, n, k[, dtype]) -- dtype defaults to bfloat16
     "m24_n2048_k8192_f16": (24, 2048, 8192, "float16"),
     "m160_n3584_k1792_f16": (160, 3584, 1792, "float16"),
     "m1024_n768_k2048_f16": (1024, 768, 2048, "float16"),
+    # Held-out set 8 (PREREG-addendum-8.md): chosen before any of it was measured.
+    "m11_n5632_k4096": (11, 5632, 4096),
+    "m28_n3840_k3072": (28, 3840, 3072),
+    "m52_n2048_k5120": (52, 2048, 5120),
+    "m88_n6144_k2048": (88, 6144, 2048),
+    "m176_n2560_k2560": (176, 2560, 2560),
+    "m352_n1536_k3072": (352, 1536, 3072),
+    "m704_n1024_k2048": (704, 1024, 2048),
+    "m1536_n512_k3072": (1536, 512, 3072),
+    "m6_n4096_k7168_f16": (6, 4096, 7168, "float16"),
+    "m40_n3072_k4096_f16": (40, 3072, 4096, "float16"),
+    "m120_n2048_k3584_f16": (120, 2048, 3584, "float16"),
+    "m896_n1536_k1024_f16": (896, 1536, 1024, "float16"),
 }
 HELDOUT_GEMM = ["m2_n4096_k4096", "m4_n2048_k8192", "m48_n3072_k1024", "m96_n1536_k2048",
                 "m768_n768_k768", "m1536_n512_k1024", "m1_n2048_k4096_f16", "m128_n4096_k512_f16"]
+HELDOUT8_GEMM = ["m11_n5632_k4096", "m28_n3840_k3072", "m52_n2048_k5120", "m88_n6144_k2048", "m176_n2560_k2560", "m352_n1536_k3072", "m704_n1024_k2048", "m1536_n512_k3072", "m6_n4096_k7168_f16", "m40_n3072_k4096_f16", "m120_n2048_k3584_f16", "m896_n1536_k1024_f16"]
 HELDOUT6_GEMM = ["m9_n4608_k4608", "m16_n3072_k6144", "m36_n6656_k1536", "m72_n2560_k3072", "m144_n4096_k1024",
                  "m208_n1536_k2560", "m384_n2048_k1536", "m768_n1280_k1024", "m4_n7168_k3584_f16",
                  "m24_n2048_k8192_f16", "m160_n3584_k1792_f16", "m1024_n768_k2048_f16"]
@@ -130,10 +144,13 @@ def shape_of(name):
 def tensors(shape):
     import torch
     m, n, k, dtype = shape_of(shape)
-    g = torch.Generator(device="cuda").manual_seed(0)
+    # Generated on the host and copied over: under the emulator a device-side
+    # randn is itself emulated and costs seconds per item, and timing does not
+    # depend on the values.
+    g = torch.Generator().manual_seed(0)
     dt = getattr(torch, dtype)
-    a = torch.randn(m, k, device="cuda", dtype=dt, generator=g)
-    b = torch.randn(k, n, device="cuda", dtype=dt, generator=g)
+    a = torch.randn(m, k, dtype=dt, generator=g).cuda()
+    b = torch.randn(k, n, dtype=dt, generator=g).cuda()
     return a, b
 
 
@@ -171,7 +188,11 @@ def enumerate_cmd(args):
         csvs = sorted(work.glob(f"tune_{shape}*.csv"))
         rows = [l for l in csvs[0].read_text().splitlines() if not l.startswith("Validator")] if csvs else []
         validators = [l for l in csvs[0].read_text().splitlines() if l.startswith("Validator")] if csvs else []
-        assert rows, f"{shape}: no tuned row in {csvs}"
+        if not rows:
+            # A tuning run that never finished -- on MI355X some small-M shapes hang the GPU
+            # inside a hipBLASLt solution -- leaves no candidate list. Reported, not fatal.
+            print(f"{shape}: no tuned row in {csvs} (tuning did not finish; see {log.name})", flush=True)
+            continue
         op, key, best, _ = rows[0].split(",")
         out[shape] = {"shape": shape_of(shape), "op": op, "key": key, "tuned_best": best,
                       "candidates": names, "validators": validators}
