@@ -3958,6 +3958,15 @@ AqlAdmissionResult CommandProcessor::admit_kernel_dispatch(
   uint32_t sgprs = sgpr_count_is_descriptor_encoded(arch, sgpr_gran) ? (sgpr_gran + 1) * 8 : 0;
   uint32_t user_sgprs = kernel_descriptor_user_sgpr_count(arch, kd);
   uint64_t entry_pc = pkt.kernel_object + static_cast<uint64_t>(kd.kernel_code_entry_byte_offset);
+  // CDNA4 kernarg preloading uses the firmware compatibility window: firmware that preloads
+  // the arguments into user SGPRs enters 256 bytes past the descriptor entry, skipping the
+  // legacy block that loads them from memory. Measured on MI355X: the first instruction a
+  // wavefront executes is the descriptor entry + 0x100 (hardware thread trace of a hipBLASLt
+  // kernel). The SGPRs are preloaded below either way; entering at the descriptor entry
+  // re-ran the loads and cost each wavefront a scalar memory round trip at start.
+  if (arch == ROCJITSU_CODE_ARCH_CDNA4 &&
+      RJ_AMDHSA_BITS_GET(kd.kernarg_preload, KERNARG_PRELOAD_SPEC_LENGTH) != 0)
+    entry_pc += 256;
   uint64_t code_load_bias = 0;
 
   uint32_t wg_size =

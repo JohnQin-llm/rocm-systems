@@ -386,6 +386,38 @@ TEST(AmdgpuVmTest, Cdna3AqlDescriptorControlsVccAlias) {
   EXPECT_EQ(wave.sgpr64(2), 1u);
 }
 
+TEST(AmdgpuVmTest, Cdna4KernargPreloadEntersPastFirmwareWindow) {
+  // MI355X firmware that preloads kernel arguments into user SGPRs enters 256 bytes past the
+  // descriptor entry (measured with a hardware thread trace of a hipBLASLt kernel); the bytes
+  // before that are the legacy block that loads the arguments from memory and must not run.
+  // Without preloading the descriptor entry is used as is.
+  using namespace rocjitsu::amdhsa;
+  std::vector<uint32_t> code(66, 0xbf800000u); // s_nop 0
+  code[0] = 0xbe8a0081u;                       // s_mov_b32 s10, 1   (legacy window)
+  code[1] = 0xbf810000u;                       // s_endpgm
+  code[64] = 0xbe8a0082u;                      // s_mov_b32 s10, 2   (descriptor entry + 256)
+  code[65] = 0xbf810000u;                      // s_endpgm
+  for (uint32_t preload_length : {0u, 1u}) {
+    SCOPED_TRACE(preload_length);
+    VmFixture f;
+    ASSERT_NO_FATAL_FAILURE(f.initialize("cdna4", 1, 10));
+    auto *snap = f.capture_halts();
+    const uint64_t kernel = f.write_kernel(0x1000, code.data(), code.size() * sizeof(uint32_t), 16,
+                                           64, 2, 0, false, 0, 0, false);
+    uint16_t preload = 0;
+    RJ_AMDHSA_BITS_SET(preload, KERNARG_PRELOAD_SPEC_LENGTH, preload_length);
+    f.mem()->load_image(reinterpret_cast<const uint8_t *>(&preload), sizeof(preload),
+                        kernel + offsetof(kernel_descriptor_t, kernarg_preload));
+    f.mem()->write32(0x8000, 0x12345678u);
+    test::AqlQueue queue(f.mem(), f.cp());
+    queue.dispatch(kernel, 64, 64, 0x8000);
+    ASSERT_NO_THROW(f.engine->run());
+    ASSERT_EQ(snap->snapshots().size(), 1u);
+    const auto &wave = snap->snapshots().front();
+    EXPECT_EQ(wave.sgpr(10), preload_length != 0 ? 2u : 1u);
+  }
+}
+
 TEST(VmFixtureSetupTest, ReportsMalformedConfigAndLeavesFixtureEmpty) {
   EXPECT_FATAL_FAILURE(
       {
