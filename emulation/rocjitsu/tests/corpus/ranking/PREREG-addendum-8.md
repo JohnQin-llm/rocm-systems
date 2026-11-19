@@ -81,3 +81,9 @@ The scoring uses `prereg_score.py` (with `--ref-config` for O) and `abs_score.py
 ## Amendment (2026-11-19, before any held-out-8 kernel was timed for the benchmark)
 
 TunableOp enumeration of m11_n5632_k4096 hung the GPU three times (`HW Exception ... GPU Hang`), on HIP 5 twice and on HIP 0 once, each time inside a different hipBLASLt solution. The shape cannot produce a candidate list, so it is replaced by m13_n4608_k4096, which has never been run. Everything else in this addendum is unchanged. The only hardware data seen so far is the partial TunableOp log of the dropped shape.
+
+## Second amendment (2026-11-19, still before any held-out-8 kernel was timed for the benchmark)
+
+The replacement shape m13_n4608_k4096 hung the GPU too. So did m9_n4608_k4608, which tuned cleanly on node g34 for held-out set 6. On node pit2-p03-g53, with the same container image and driver version (6.16.13), m9_n4608_k4608 tunes to completion. The hangs belong to node g40, not to the shapes.
+
+The first amendment is therefore withdrawn and the original shape list stands: m11_n5632_k4096 is back and m13_n4608_k4096 is out. The hipBLASLt part of the set moves to node g53: TunableOp enumeration, and the hardware truth on its idle GPUs, guarded as always. The Triton and kernel-family parts stay on g40, HIP 0-7, as stated above.
