@@ -385,6 +385,8 @@ AccessCost scalar_access(const Tuning &tuning, TimingPlane &plane,
 ///
 /// @details The local data share never leaves the compute unit, so this is the
 /// one access the plane does not see.
+} // namespace
+
 /// @brief LDS cycles from bank multiplicity, the rule measured on MI355X (Tuning::lds_measured_banks).
 ///
 /// @details The multiplicity is the largest number of *distinct* words any one
@@ -415,6 +417,29 @@ std::uint64_t lds_measured_cycles(const RetiredInstruction &retired, std::uint64
     multiplicity = std::max(multiplicity, ++count[static_cast<std::size_t>(word % banks)]);
   const std::uint64_t m = std::max<std::uint32_t>(1, multiplicity);
   std::uint64_t cycles = 0;
+  if (retired.is_load && retired.bytes_per_lane > 4 && retired.second_lane_addresses == nullptr) {
+    // Wide reads run in lane groups -- b64 as two 32-lane halves, b128 as four 16-lane quarters --
+    // and cost the sum over groups of each group's multiplicity (most distinct dwords on one bank).
+    // Measured on 49 patterns (bench/ubench tr_*), including Triton's swizzled transpose reads, which
+    // cost exactly what plain ds_read_b64 costs on the same addresses.
+    const std::size_t group = retired.bytes_per_lane >= 16 ? 16 : 32;
+    const std::vector<std::uint64_t> &lanes = *retired.lane_addresses;
+    std::uint64_t sum = 0;
+    for (std::size_t first = 0; first < lanes.size(); first += group) {
+      words.clear();
+      for (std::size_t i = first; i < std::min(lanes.size(), first + group); ++i)
+        for (std::uint64_t offset = 0; offset < per_lane; offset += width)
+          words.push_back((lanes[i] + offset) / width);
+      std::sort(words.begin(), words.end());
+      words.erase(std::unique(words.begin(), words.end()), words.end());
+      count.assign(static_cast<std::size_t>(banks), 0);
+      std::uint32_t mg = 0;
+      for (const std::uint64_t word : words)
+        mg = std::max(mg, ++count[static_cast<std::size_t>(word % banks)]);
+      sum += std::max<std::uint32_t>(1, mg);
+    }
+    return std::min<std::uint64_t>(std::max<std::uint64_t>(2, sum), 64);
+  }
   if (retired.is_load) {
     const std::uint64_t floor = retired.bytes_per_lane >= 16 ? 4 : 2;
     cycles = std::max<std::uint64_t>(floor, retired.bytes_per_lane <= 4 ? 2 * m : m);
@@ -424,6 +449,8 @@ std::uint64_t lds_measured_cycles(const RetiredInstruction &retired, std::uint64
   }
   return std::min<std::uint64_t>(cycles, 64);
 }
+
+namespace {
 
 AccessCost lds_access(const Tuning &tuning, const RetiredInstruction &retired) {
   AccessCost cost;

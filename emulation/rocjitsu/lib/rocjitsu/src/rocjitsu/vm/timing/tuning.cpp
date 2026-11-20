@@ -119,6 +119,17 @@ public:
     return found->second == "true" || found->second == "1";
   }
 
+  /// @brief An optional named choice. Absent is @p absent and is not a
+  ///        fallback: the default is the documented behaviour, not a guess.
+  std::string choice(std::string_view key, std::string_view absent) {
+    const std::string name(key);
+    const auto found = machine_.find(name);
+    if (found == machine_.end())
+      return std::string(absent);
+    tuning_.resolved.push_back(name + " = " + found->second);
+    return found->second;
+  }
+
   /// @brief Cycles to charge one instruction of @p cls on its issue port.
   ///
   /// @details A class the config does not name resolves to the largest issue
@@ -264,6 +275,16 @@ Tuning Tuning::parse(const std::string &config_json) {
     out.lines_per_cycle = read.real(prefix + ".lines_per_cycle", 1.0);
     out.write_back = read.flag(prefix + ".write_back");
     out.write_through = read.flag(prefix + ".write_through");
+    const std::string hash = read.choice(prefix + ".set_hash", "fold");
+    if (hash == "mi355x") {
+      out.set_hash = SetHash::Mi355x;
+      if (out.sets != 4 || out.line_bytes != 128)
+        util::Logger::warn("timing: machine." + prefix +
+                           ".set_hash mi355x needs 4 sets of 128-byte lines; using fold");
+    } else if (hash != "fold") {
+      util::Logger::warn("timing: machine." + prefix + ".set_hash '" + hash +
+                         "' is not fold or mi355x; using fold");
+    }
     return out;
   };
   tuning.l1_vector = cache("l1_vector");

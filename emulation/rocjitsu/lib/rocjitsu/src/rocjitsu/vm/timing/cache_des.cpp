@@ -7,6 +7,7 @@
 #include "rocjitsu/vm/timing/engine.h"
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cmath>
 #include <utility>
@@ -38,15 +39,64 @@ std::uint64_t cycles_for(std::uint64_t items, double per_cycle) {
 
 // -- TagArray ---------------------------------------------------------------
 
-void TagArray::configure(std::uint64_t sets, std::uint64_t ways, std::uint64_t line_bytes) {
+void TagArray::configure(std::uint64_t sets, std::uint64_t ways, std::uint64_t line_bytes,
+                         SetHash set_hash) {
   line_bytes_ = round_up_pow2(line_bytes);
   line_shift_ = line_shift_for(line_bytes_);
   sets_ = round_up_pow2(std::max<std::uint64_t>(1, sets));
   ways_ = std::max<std::uint64_t>(1, ways);
   set_mask_ = sets_ - 1;
+  mi355x_hash_ = set_hash == SetHash::Mi355x && sets_ == 4 && line_bytes_ == 128;
   tags_.assign(static_cast<std::size_t>(sets_ * ways_), kEmpty);
   stamps_.assign(static_cast<std::size_t>(sets_ * ways_), 0);
   dirty_.assign(static_cast<std::size_t>(sets_ * ways_), 0);
+}
+
+namespace {
+
+/// @brief The MI355X vector L1 set of 128-byte line @p line (byte address >> 7).
+///
+/// @details Measured on one MI355X with eviction sets (bench/ubench/l1g_*):
+/// lines were assigned to one of the four sets by timing which of them evict
+/// a known 64-line set -- every line of a 128 KiB region, and for each line
+/// address bit 10 to 18 (and five combinations of them) 34 lines with that
+/// bit set. The index is a table over a 5-bit XOR fold v of the line address L:
+///   v0 = L0, v1 = L1, v2 = L2,
+///   v3 = L4^L6^L8^L10^L11^L13,
+///   v4 = L3^L4^L5^L6^L7^L9^L11^L12
+/// (byte address bits 7, 8, 9 enter directly; L14 and up, byte bit 21 and up,
+/// do not enter). The 32 values of v land on the sets 9, 9, 7, 7 times, which
+/// is why a contiguous footprint fills the sets unevenly. The fold alone
+/// reproduces 1015 of the 1024 lines of the 128 KiB region; the other nine are
+/// all the last line of an 8 KiB block (L mod 64 = 63) with L6 clear, or with
+/// L9..L6 all set, and flipping v2 and v3 for exactly those reproduces every
+/// measured line (the 1024, 476 high-bit lines, and 256 lines 16 MiB up).
+/// The probe recorded buffer offsets, not addresses; the two agree in every
+/// bit that matters as long as the buffer was 2 MiB aligned.
+std::uint64_t mi355x_vector_l1_set(std::uint64_t line) {
+  const auto bit = [line](unsigned position) -> std::uint64_t { return (line >> position) & 1; };
+  std::uint64_t v = bit(0) | bit(1) << 1 | bit(2) << 2 |
+                    (bit(4) ^ bit(6) ^ bit(8) ^ bit(10) ^ bit(11) ^ bit(13)) << 3 |
+                    (bit(3) ^ bit(4) ^ bit(5) ^ bit(6) ^ bit(7) ^ bit(9) ^ bit(11) ^ bit(12)) << 4;
+  if ((line & 63) == 63 && (bit(6) == 0 || ((line >> 6) & 15) == 15))
+    v ^= 0b01100;
+  static constexpr std::array<std::uint8_t, 32> kSet = {0, 2, 1, 0, 3, 1, 2, 0, 1, 3, 0,
+                                                        1, 2, 0, 3, 1, 2, 0, 3, 0, 1, 3,
+                                                        0, 2, 3, 1, 2, 1, 0, 2, 1, 3};
+  return kSet[v];
+}
+
+} // namespace
+
+std::uint64_t TagArray::set_of(std::uint64_t byte_address) const {
+  const std::uint64_t line = byte_address >> line_shift_;
+  if (mi355x_hash_)
+    return mi355x_vector_l1_set(line);
+  // Hashed set index: hardware folds upper address bits into the index so a
+  // power-of-two stride does not pile onto a few sets.
+  const std::uint64_t index_bits = static_cast<std::uint64_t>(std::countr_zero(sets_));
+  return index_bits == 0 ? 0
+                         : (line ^ (line >> index_bits) ^ (line >> (2 * index_bits))) & set_mask_;
 }
 
 bool TagArray::access(std::uint64_t byte_address, std::uint64_t stamp, bool write, bool cold,
@@ -56,12 +106,7 @@ bool TagArray::access(std::uint64_t byte_address, std::uint64_t stamp, bool writ
   if (ways_ == 0 || tags_.empty())
     return false;
   const std::uint64_t line = byte_address >> line_shift_;
-  // Hashed set index: hardware folds upper address bits into the index so a
-  // power-of-two stride does not pile onto a few sets.
-  const std::uint64_t index_bits = static_cast<std::uint64_t>(std::countr_zero(sets_));
-  const std::uint64_t hashed =
-      index_bits == 0 ? 0 : (line ^ (line >> index_bits) ^ (line >> (2 * index_bits))) & set_mask_;
-  const std::size_t base = static_cast<std::size_t>(hashed * ways_);
+  const std::size_t base = static_cast<std::size_t>(set_of(byte_address) * ways_);
   std::size_t victim = base;
   std::uint64_t oldest = ~0ULL;
   for (std::uint64_t way = 0; way < ways_; ++way) {
@@ -109,7 +154,7 @@ void TagArray::invalidate() {
 CacheDes::CacheDes(std::string name, const simdojo::ClockDomain &domain, TimingEngine &engine,
                    const CacheTuning &tuning, std::vector<std::uint64_t> *line_pool)
     : TimedComponent(std::move(name), domain, engine), tuning_(tuning), line_pool_(line_pool) {
-  tags_.configure(tuning_.sets, tuning_.ways, tuning_.line_bytes);
+  tags_.configure(tuning_.sets, tuning_.ways, tuning_.line_bytes, tuning_.set_hash);
 }
 
 void CacheDes::invalidate() { tags_.invalidate(); }
