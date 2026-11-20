@@ -9,7 +9,6 @@
 #include <deque>
 #include <functional>
 #include <limits>
-#include <queue>
 #include <regex>
 #include <unordered_set>
 #include <utility>
@@ -305,6 +304,23 @@ struct LiveWave {
   std::size_t recent_short_count = 0;
 };
 
+/// @brief What picking the next wavefront needs of one that has not ended,
+///        kept compact so the per-issue scan touches little memory.
+///
+/// @details A wavefront's ready time is max(own, pipes_[slot[0..2]]): `own`
+/// (next_at and its current instruction's source registers) and the slots
+/// change only when it issues or a barrier releases it, the pipes whenever
+/// anyone issues. Unused slots point at a pipe entry that stays -infinity.
+struct Candidate {
+  /// @brief +infinity while blocked at a barrier, else own.
+  double key = 0.0;
+  double own = 0.0;
+  std::uint64_t age = 0;
+  std::array<std::uint32_t, 3> slot{};
+  std::uint32_t live = 0;
+  std::uint8_t priority = 0;
+};
+
 class Scheduler {
 public:
   Scheduler(const SchedulerTuning &tuning, std::span<const SchedRule> rules,
@@ -312,7 +328,10 @@ public:
       : tuning_(tuning), rules_(rules), resident_(std::max<std::uint64_t>(1, resident)),
         simds_(static_cast<std::size_t>(std::max<std::uint64_t>(1, tuning.simds_per_cu))),
         memory_(memory) {
-    pipes_.assign(kNumSchedPipes * simds_, 0.0);
+    pipes_.assign(kNumSchedPipes * simds_ + 1, 0.0);
+    unused_slot_ = static_cast<std::uint32_t>(kNumSchedPipes * simds_);
+    pipes_[unused_slot_] = -std::numeric_limits<double>::infinity();
+    rule_fetched_.assign(rules_.size(), 0);
     // The pc-averaged memory behaviour of each vector-memory rule, looked up once.
     if (memory_.pcs != nullptr) {
       rule_memory_.assign(rules_.size(), nullptr);
@@ -385,29 +404,39 @@ public:
     launch(0.0);
     double now = 0.0;
     while (true) {
-      LiveWave *best = nullptr;
-      double best_time = 0.0;
-      bool any_unended = false;
-      for (LiveWave &wave : live_) {
-        if (wave.ended)
-          continue;
-        any_unended = true;
-        if (wave.blocked)
-          continue;
-        const double ready = ready_time(wave);
-        if (best == nullptr || ready < best_time ||
-            (ready == best_time && (wave.priority > best->priority ||
-                                    (wave.priority == best->priority && wave.age < best->age)))) {
-          best = &wave;
-          best_time = ready;
+      const Candidate *best = nullptr;
+      // Only the wavefronts that have not ended compete; the order they are
+      // visited in does not matter (ready time, priority, age is a total
+      // order). First the earliest ready time (a blocked wavefront's is
+      // +infinity), then the highest priority and oldest among those ready then.
+      const double *pipes = pipes_.data();
+      const std::size_t count = candidates_.size();
+      ready_.resize(count);
+      double best_time = std::numeric_limits<double>::infinity();
+      for (std::size_t at = 0; at < count; ++at) {
+        const Candidate &candidate = candidates_[at];
+        const double ready = std::max(std::max(candidate.key, pipes[candidate.slot[0]]),
+                                      std::max(pipes[candidate.slot[1]], pipes[candidate.slot[2]]));
+        ready_[at] = ready;
+        best_time = std::min(best_time, ready);
+      }
+      if (best_time != std::numeric_limits<double>::infinity()) {
+        for (std::size_t at = 0; at < count; ++at) {
+          if (ready_[at] != best_time)
+            continue;
+          const Candidate &candidate = candidates_[at];
+          if (best == nullptr || candidate.priority > best->priority ||
+              (candidate.priority == best->priority && candidate.age < best->age))
+            best = &candidate;
         }
       }
       if (best == nullptr) {
-        if (any_unended) {
+        if (!candidates_.empty()) {
           // Everyone left is at a barrier nobody can release.
-          for (LiveWave &wave : live_)
-            if (!wave.ended)
-              wave.blocked = false;
+          for (Candidate &candidate : candidates_) {
+            candidate.key = candidate.own;
+            live_[candidate.live].blocked = false;
+          }
           continue;
         }
         if (next_group_ < groups_.size()) {
@@ -415,15 +444,15 @@ public:
           // completion the next workgroup fits once the last one completes.
           double at = now;
           if (tuning_.slot_release_at_completion)
-            for (const LiveWave &wave : live_)
-              at = std::max(at, wave.end);
+            at = std::max(at, max_end_);
           launch(at);
           continue;
         }
         break;
       }
       now = std::max(now, best_time);
-      issue(*best, now);
+      floor_ = now;
+      issue(live_[best->live], now);
       ++result.instructions;
     }
     for (const LiveWave &wave : live_) {
@@ -453,14 +482,7 @@ private:
   double ready_time(const LiveWave &wave, double &core) const {
     const SchedRecord &record = wave.in->records[wave.pc];
     const SchedRule &rule = rules_[record.rule];
-    double ready = wave.next_at;
-    for (const RegisterRange &range : rule.reads) {
-      const std::vector<double> &file = wave.registers[static_cast<std::size_t>(range.file)];
-      const std::size_t last = std::min<std::size_t>(file.size(), std::size_t{range.index} +
-                                                                      std::max<std::uint8_t>(1, range.count));
-      for (std::size_t reg = range.index; reg < last; ++reg)
-        ready = std::max(ready, file[reg]);
-    }
+    double ready = candidates_[candidate_of_[static_cast<std::size_t>(&wave - live_.data())]].own;
     if (rule.pipe != SchedPipe::None)
       ready = std::max(ready, pipes_[pipe_slot(rule.pipe, rule.pipe_per_simd, wave.simd, simds_)]);
     // valu_pair: a non-double-rate VALU op or an MFMA waits for the SIMD's open slot.
@@ -548,7 +570,11 @@ private:
         }
       }
     }
-    fetched_.insert(rule.pc / line_bytes);
+    if (!rule_fetched_[record.rule]) {
+      // The set only grows, so a rule's own line needs inserting once.
+      fetched_.insert(rule.pc / line_bytes);
+      rule_fetched_[record.rule] = 1;
+    }
     if (tuning_.cndmask32_saturation && rule.pipe == SchedPipe::Valu) {
       // replay11 M_CND: a cnd32 op that had to wait for the resource last taken
       // from another SIMD saturates it; ordinary VALU then issues slowly.
@@ -584,11 +610,22 @@ private:
       if (cap > 0 && requests > 0.0 && !write) {
         entries = std::min<std::uint64_t>(
             cap, std::max<std::uint64_t>(1, static_cast<std::uint64_t>(std::nearbyint(requests))));
-        while (!entries_.empty() && entries_.top() <= now)
-          entries_.pop();
-        while (entries_.size() + entries > cap) {
-          start_at = std::max(start_at, entries_.top());
-          entries_.pop();
+        while (!entries_.empty() && entries_.front().release <= now) {
+          entry_count_ -= entries_.front().count;
+          std::pop_heap(entries_.begin(), entries_.end(), LaterRelease{});
+          entries_.pop_back();
+        }
+        while (entry_count_ + entries > cap) {
+          // Wait for the earliest-released entries, one at a time.
+          EntryGroup &earliest = entries_.front();
+          const std::uint64_t take = std::min(earliest.count, entry_count_ + entries - cap);
+          start_at = std::max(start_at, earliest.release);
+          earliest.count -= take;
+          entry_count_ -= take;
+          if (earliest.count == 0) {
+            std::pop_heap(entries_.begin(), entries_.end(), LaterRelease{});
+            entries_.pop_back();
+          }
         }
         if (start_at > now) {
           double &path = pipes_[pipe_slot(SchedPipe::Vmem, false, wave.simd, simds_)];
@@ -624,8 +661,8 @@ private:
             std::max(mean->far_share + mean->l2_share, 1e-9)));
         const double hit_done =
             std::min(done, done - mean->latency + std::min(mean->latency, tuning_.memory_l2_latency_cycles));
-        for (std::uint64_t entry = 0; entry < entries; ++entry)
-          entries_.push(entry < far_entries ? done : hit_done);
+        hold_entries(done, std::min(far_entries, entries));
+        hold_entries(hit_done, entries - std::min(far_entries, entries));
       }
     }
     // A store is acked no earlier than store_ack after issue (replay6
@@ -663,10 +700,13 @@ private:
       wave.blocked = true;
       release(wave.group, now);
     }
+    const std::size_t self = static_cast<std::size_t>(&wave - live_.data());
     if (rule.terminate || wave.pc >= wave.in->records.size()) {
       finish(wave, now + interval);
       if (next_group_ < groups_.size())
-        launch(tuning_.slot_release_at_completion ? wave.end : now);
+        launch(tuning_.slot_release_at_completion ? live_[self].end : now);
+    } else {
+      refresh(self);
     }
   }
 
@@ -677,6 +717,10 @@ private:
         end = std::max(end, completion);
     wave.end = end;
     wave.ended = true;
+    drop(static_cast<std::size_t>(&wave - live_.data()));
+    max_end_ = std::max(max_end_, end);
+    if (tuning_.slot_release_at_completion)
+      completing_.push_back(static_cast<std::size_t>(&wave - live_.data()));
     --running_;
     release(wave.group, at);
   }
@@ -700,6 +744,7 @@ private:
         continue;
       member.blocked = false;
       member.next_at = std::max(member.next_at, now + tuning_.barrier_release_cycles);
+      refresh(index);
     }
   }
 
@@ -710,10 +755,10 @@ private:
   /// accesses are still outstanding at @p at. Workgroups after the first
   /// start workgroup_launch_cycles after @p at.
   void launch(double at) {
+    prune_completing(at);
     std::uint64_t held = running_;
-    if (tuning_.slot_release_at_completion)
-      for (const LiveWave &wave : live_)
-        held += wave.ended && wave.end > at ? 1 : 0;
+    for (const std::size_t index : completing_)
+      held += live_[index].end > at ? 1 : 0;
     const double delay = at > 0.0 ? tuning_.workgroup_launch_cycles : 0.0;
     while (next_group_ < groups_.size() &&
            (held + groups_[next_group_].size() <= resident_ || held == 0)) {
@@ -737,6 +782,10 @@ private:
         wave.start = wave.next_at;
         members_.back().push_back(live_.size());
         live_.push_back(std::move(wave));
+        candidate_of_.push_back(static_cast<std::uint32_t>(candidates_.size()));
+        candidates_.emplace_back();
+        candidates_.back().live = static_cast<std::uint32_t>(live_.size() - 1);
+        refresh(live_.size() - 1);
         ++running_;
       }
       ++next_group_;
@@ -752,9 +801,11 @@ private:
     const std::size_t simds = simds_;
     const std::uint64_t cap = std::max<std::uint64_t>(1, resident_ / simds);
     std::vector<std::uint64_t> load(simds, 0);
-    for (const LiveWave &wave : live_)
-      if (!wave.ended || (tuning_.slot_release_at_completion && wave.end > at))
-        ++load[wave.simd];
+    for (const Candidate &candidate : candidates_)
+      ++load[live_[candidate.live].simd];
+    for (const std::size_t index : completing_) // ended (slot_release_at_completion only)
+      if (live_[index].end > at)
+        ++load[live_[index].simd];
     std::vector<std::size_t> share(simds);
     for (std::size_t simd = 0; simd < simds; ++simd)
       share[simd] = count / simds + (simd < count % simds ? 1 : 0);
@@ -782,6 +833,69 @@ private:
     return true;
   }
 
+  /// @brief Recompute live_[@p index]'s candidate from its current state.
+  void refresh(std::size_t index) {
+    const LiveWave &wave = live_[index];
+    if (wave.pc >= wave.in->records.size())
+      return; // issued its last instruction (a barrier); finishes right away
+    Candidate &candidate = candidates_[candidate_of_[index]];
+    const SchedRule &rule = rules_[wave.in->records[wave.pc].rule];
+    double own = wave.next_at;
+    for (const RegisterRange &range : rule.reads) {
+      const std::vector<double> &file = wave.registers[static_cast<std::size_t>(range.file)];
+      const std::size_t last = std::min<std::size_t>(file.size(), std::size_t{range.index} +
+                                                                      std::max<std::uint8_t>(1, range.count));
+      for (std::size_t reg = range.index; reg < last; ++reg)
+        own = std::max(own, file[reg]);
+    }
+    candidate.own = own;
+    candidate.key = wave.blocked ? std::numeric_limits<double>::infinity() : own;
+    candidate.age = wave.age;
+    candidate.priority = wave.priority;
+    candidate.slot.fill(unused_slot_);
+    if (rule.pipe != SchedPipe::None)
+      candidate.slot[0] = static_cast<std::uint32_t>(pipe_slot(rule.pipe, rule.pipe_per_simd, wave.simd, simds_));
+    // valu_pair: a non-double-rate VALU op or an MFMA waits for the SIMD's open slot.
+    if (tuning_.valu_pair && ((rule.pipe == SchedPipe::Valu && rule.occupancy >= tuning_.valu_cycles) ||
+                              rule.pipe == SchedPipe::Mfma))
+      candidate.slot[1] = static_cast<std::uint32_t>(pipe_slot(SchedPipe::ValuSlot, true, wave.simd, simds_));
+    if (rule.extra_pipe != SchedPipe::None)
+      candidate.slot[2] =
+          static_cast<std::uint32_t>(pipe_slot(rule.extra_pipe, rule.extra_per_simd, wave.simd, simds_));
+  }
+
+  /// @brief Remove live_[@p index]'s candidate (it ended).
+  void drop(std::size_t index) {
+    const std::uint32_t at = candidate_of_[index];
+    candidates_[at] = candidates_.back();
+    candidate_of_[candidates_[at].live] = at;
+    candidates_.pop_back();
+  }
+
+  /// @brief Hold @p count outstanding-request entries until @p release.
+  void hold_entries(double release, std::uint64_t count) {
+    if (count == 0)
+      return;
+    entries_.push_back({release, count});
+    std::push_heap(entries_.begin(), entries_.end(), LaterRelease{});
+    entry_count_ += count;
+  }
+
+  /// @brief Forget ended wavefronts that completed by min(@p at, floor_):
+  ///        every later launch is at or after floor_ (the current issue cycle),
+  ///        so they can never hold a slot again.
+  void prune_completing(double at) {
+    const double limit = std::min(at, floor_);
+    for (std::size_t at_index = 0; at_index < completing_.size();) {
+      if (live_[completing_[at_index]].end <= limit) {
+        completing_[at_index] = completing_.back();
+        completing_.pop_back();
+      } else {
+        ++at_index;
+      }
+    }
+  }
+
   const SchedulerTuning &tuning_;
   std::span<const SchedRule> rules_;
   std::uint64_t resident_;
@@ -794,7 +908,16 @@ private:
   double queue_free_ = 0.0;
   /// @brief Release cycles of the unit's busy TCP-to-TCC read request
   ///        entries (memory_outstanding_requests), earliest on top.
-  std::priority_queue<double, std::vector<double>, std::greater<double>> entries_;
+  ///        Entries released at the same cycle are kept as one group.
+  struct EntryGroup {
+    double release = 0.0;
+    std::uint64_t count = 0;
+  };
+  struct LaterRelease {
+    bool operator()(const EntryGroup &a, const EntryGroup &b) const { return a.release > b.release; }
+  };
+  std::vector<EntryGroup> entries_; // a min-heap on release
+  std::uint64_t entry_count_ = 0;
   /// @brief cndmask32_saturation: saturated until, and the SIMD that last took cnd32.
   double cnd_saturated_until_ = -1.0;
   int cnd_simd_ = -1;
@@ -806,10 +929,26 @@ private:
   std::vector<std::vector<const SchedWave *>> groups_;
   std::size_t next_group_ = 0;
   std::vector<LiveWave> live_;
+  /// @brief One per wavefront that has not ended, any order; candidate_of_
+  ///        maps a live_ index to its position (stale once the wave ended).
+  std::vector<Candidate> candidates_;
+  std::vector<std::uint32_t> candidate_of_;
+  /// @brief run()'s scratch: each candidate's ready time.
+  std::vector<double> ready_;
+  /// @brief The pipes_ entry that is always -infinity (an unused Candidate slot).
+  std::uint32_t unused_slot_ = 0;
+  /// @brief slot_release_at_completion: indices of ended wavefronts whose
+  ///        accesses may still be outstanding at a later launch.
+  std::vector<std::size_t> completing_;
+  /// @brief Latest end of an ended wavefront, and the current issue cycle.
+  double max_end_ = 0.0;
+  double floor_ = 0.0;
   std::vector<std::vector<std::size_t>> members_;
   std::uint64_t launched_ = 0;
   std::uint64_t running_ = 0;
   std::unordered_set<std::uint64_t> fetched_;
+  /// @brief Per rule: its own fetch line is already in fetched_.
+  std::vector<std::uint8_t> rule_fetched_;
   /// @brief Streams with their flag spins collapsed, and where each one's
   ///        first kept spin iteration starts.
   std::vector<SchedWave> collapsed_;

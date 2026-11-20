@@ -8,7 +8,7 @@ cycle by cycle, and every rule is a measured hardware fact rather than a fitted 
 | | |
 | --- | --- |
 | **What** | Replace the fitted closed-form composition of [timing.md](timing.md) with a per-SIMD scheduler plus measured kernel-level terms (launch, XCD stagger, teardown, write-back). |
-| **Status** | **Prototype.** Runs as an offline replay over instruction streams exported by the emulator. A C++ port of the frozen model is on a separate branch behind `scheduler.enabled` (default off), not merged. It matches the replay within one cycle per CU and scores 7.8% / 94% queued on the development data, as the replay does. With the scheduler off, the shipped composition changes only through a wave-identity fix ([§7.4](#74-c-port)). |
+| **Status** | **Prototype.** Runs as an offline replay over instruction streams exported by the emulator. A C++ port of the frozen model is merged behind `scheduler.enabled`, which defaults to off; the measured MI355X overlay `configs/tuning/gfx950_mi355x_measured.json` turns it on. It matches the replay within one cycle per CU and scores 7.8% / 94% queued on the development data, as the replay does. With the scheduler off, the shipped composition changes only through a wave-identity fix ([§7.4](#74-c-port)). |
 | **Headline: held-out set 9, scored once** | 95 library calls on new shapes; model frozen and scoring pre-registered before the run ([§9.3](#93-held-out-set-9)). **Queued reference (primary): median \|pred/meas − 1\| 7.8%, 91% within 25%**, median ratio 0.96. Idle-gap reference: 7.3%, 94%, 0.96. |
 | **Development data (in-sample)** | 85 single-kernel items: queued 7.8% / 94%, idle gap 6.1% / 95% ([§9.1](#91-development-data)). In the same metric, held-out is about one point worse than development (8.5% vs 7.8% queued). Nothing is fitted except one power limit, which an independent measurement confirms ([§4.7](#47-occupancy-workgroup-launch-clock)). The shipped fitted composition scores 19.6% / 56.5% on the same 85 items, also in-sample (its knobs were fitted on this data). |
 | **Ranking** | On 5 tuning problems × 76 configs, the true best config is always in the model's top 3 ([§9.4](#94-ranking-test)). |
@@ -405,12 +405,14 @@ the stall cause of every non-issue cycle ([§3.2](#32-one-scheduling-step)).
 The rule tables become tuning data in the config, each entry citing its measurement; the shipped
 composition stays selectable.
 
-Port status: separate branch, behind `scheduler.enabled` (or `ROCJITSU_TIMING_SCHEDULER=1`), default
-off, not merged. It implements the frozen model: every rule of [§4](#4-measured-rules-mi355x), including
+Port status: merged. The `scheduler.enabled` key defaults to off, and the measured overlay
+`configs/tuning/gfx950_mi355x_measured.json` sets it to 1, so a config merged with that overlay
+(`tests/corpus/merge-tuning.py --tuning`) uses the scheduler. Set the key to 0 for the composed terms.
+`ROCJITSU_TIMING_SCHEDULER=1` or `=0` overrides the config either way. It implements the frozen model: every rule of [§4](#4-measured-rules-mi355x), including
 [§4.8](#48-rules-added-for-the-frozen-model), both kernel-time regimes and the power-limited clock. Each
 rule is a `scheduler.*` key whose default is the measured value, with its source noted in `tuning.h`;
 `configs/tuning/gfx950_mi355x_measured.json` lists them all. Exact-number unit tests pin each rule
-(`tests/timing/measured_scheduler_test.cpp`, 69 tests).
+(`tests/timing/measured_scheduler_test.cpp`, 70 tests).
 
 | Part | Status |
 | --- | --- |
@@ -431,6 +433,20 @@ rule is a `scheduler.*` key whose default is the measured value, with its source
 The memory accesses still reach the caches on each wavefront's own timeline. The scheduler runs over the
 buffered streams at dispatch end, as the replay does over the export, so issuing accesses at the
 scheduled cycle (above) is not done yet.
+
+**Runtime.** Each unit is scheduled once per pass, and a saturated unit takes up to eleven passes
+(two-pass queue plus the bisection). The scheduler keeps only the wavefronts that have not ended in a
+compact candidate list: a ready time is the maximum of the wavefront's own term and three pipe slots,
+and the own term changes only when the wavefront issues or a barrier releases it. Slot holders that
+ended but are still completing are counted from a short list. Outstanding-request entries that are
+released in the same cycle are held as one group. Units are scheduled on several host threads,
+and the results are applied in unit order, so they do not depend on the thread count. The thread
+count is `ROCJITSU_TIMING_SCHEDULER_THREADS` when set (1 means serial); otherwise the config's
+top-level `cpu_thread_budget` when set (a budget of 1 schedules serially); otherwise the CPUs the
+process may run on, at most 8. With 8 threads, on the 95 development items, a
+run with the scheduler on takes 1.09× as long in total as one with it off (per item: median 1.07×, maximum 1.27×).
+Before these changes it took 1.86× (maximum 7.0×, for swiglu `sw16384x1408`: 1763 s against 252 s).
+The schedules are bit-identical to before.
 
 **Check against the replay.** Eight items were run with every CU exported, and the frozen replay was
 run on the same records with the frozen switches: rmsnorm, two Triton matmuls, causal attention, two fp8
@@ -693,12 +709,11 @@ faster way to tune.
 | Energy table | Consistent with *C* but not exact per operation; ≈20% of real-kernel power unexplained ([§4.7](#47-occupancy-workgroup-launch-clock)) |
 | Bandwidth in the last round of a grid that only partly fills the CUs | Not modelled |
 | Instruction fetch beyond the branch rule | Not modelled |
-| C++ port | Frozen model ported and checked against the replay; same development score. Multi-kernel calls are still timed per dispatch ([§7.4](#74-c-port)). |
+| C++ port | Merged and checked against the replay; same development score; on in the measured overlay. Multi-kernel calls are still timed per dispatch ([§7.4](#74-c-port)). |
 
 Plan:
 
-1. Merge the C++ port ([§7.4](#74-c-port)) behind its switch.
-2. Add the measured round-2 rules (dispatcher, relaunch delay, dirty-byte count) under the same inclusion
+1. Add the measured round-2 rules (dispatcher, relaunch delay, dirty-byte count) under the same inclusion
    rule, on development data only, then score them once on a new held-out set.
 
 The figures and diagrams (light and dark variants) are regenerated by

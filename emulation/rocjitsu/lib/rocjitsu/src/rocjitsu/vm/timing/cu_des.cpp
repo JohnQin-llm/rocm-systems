@@ -948,9 +948,20 @@ void ComputeUnitDes::reset_occupancy() {
 }
 
 void ComputeUnitDes::run_schedule(std::uint64_t resident_waves, const DispatchMemory *memory) {
+  ScheduleResult result;
+  if (schedule_buffered(resident_waves, memory, result))
+    apply_schedule(result);
+}
+
+bool ComputeUnitDes::schedule_buffered(std::uint64_t resident_waves, const DispatchMemory *memory,
+                                       ScheduleResult &result) {
   if (!recorder_ || recorder_->empty())
-    return;
-  const ScheduleResult result = recorder_->run(resident_waves, memory);
+    return false;
+  result = recorder_->run(resident_waves, memory);
+  return true;
+}
+
+void ComputeUnitDes::apply_schedule(const ScheduleResult &result) {
   occupancy_.scheduled_cycles = static_cast<std::uint64_t>(std::ceil(result.end));
   occupancy_.scheduled_wave_cycles = static_cast<std::uint64_t>(std::ceil(result.wave_cycles));
   occupancy_.scheduled_end = result.end;

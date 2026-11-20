@@ -6,9 +6,17 @@
 #include "rocjitsu/vm/timing/measured_scheduler.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
+#include <cstdlib>
+#include <system_error>
+#include <thread>
 #include <utility>
+
+#if defined(__linux__)
+#include <sched.h>
+#endif
 
 namespace rocjitsu::timing {
 namespace {
@@ -209,6 +217,89 @@ bool DispatchDes::claim_acquire() {
   return acquired_.compare_exchange_strong(expected, true, std::memory_order_relaxed);
 }
 
+namespace {
+
+/// @brief Default cap on the host threads the measured scheduler uses at dispatch end.
+constexpr std::size_t kDefaultSchedulerThreads = 8;
+
+/// @brief Host threads for scheduling the units: ROCJITSU_TIMING_SCHEDULER_THREADS
+///        when set (1 = serial); else the config's cpu_thread_budget when set;
+///        else the CPUs this process may run on, at most kDefaultSchedulerThreads.
+std::size_t scheduler_threads(std::uint64_t budget) {
+  static const std::size_t requested = [] {
+    const char *env = std::getenv("ROCJITSU_TIMING_SCHEDULER_THREADS");
+    return env != nullptr && *env != '\0' ? static_cast<std::size_t>(std::strtoul(env, nullptr, 10)) : 0;
+  }();
+  if (requested != 0)
+    return requested;
+  if (budget != 0)
+    return static_cast<std::size_t>(budget);
+  static const std::size_t usable = [] {
+    std::size_t cpus = 0;
+#if defined(__linux__)
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    if (sched_getaffinity(0, sizeof(set), &set) == 0)
+      cpus = static_cast<std::size_t>(CPU_COUNT(&set));
+#endif
+    if (cpus == 0)
+      cpus = std::thread::hardware_concurrency();
+    return std::clamp<std::size_t>(cpus, 1, kDefaultSchedulerThreads);
+  }();
+  return usable;
+}
+
+} // namespace
+
+void DispatchDes::schedule_units(const DispatchMemory *memory) {
+  // A unit's schedule depends only on its own buffered streams and the shared,
+  // read-only memory table, so units are scheduled on several threads and the
+  // results applied in unit order: the outcome does not depend on the thread
+  // count. Largest units first, for balance.
+  std::vector<std::size_t> order;
+  std::vector<std::size_t> work(units_.size(), 0);
+  for (std::size_t index = 0; index < units_.size(); ++index) {
+    const ComputeUnitDes *unit = units_[index];
+    if (unit == nullptr || unit->recorder() == nullptr || unit->recorder()->empty())
+      continue;
+    for (const SchedWave &wave : unit->recorder()->waves())
+      work[index] += wave.records.size();
+    order.push_back(index);
+  }
+  std::stable_sort(order.begin(), order.end(),
+                   [&](std::size_t a, std::size_t b) { return work[a] > work[b]; });
+  std::vector<ScheduleResult> results(units_.size());
+  std::vector<std::uint8_t> scheduled(units_.size(), 0);
+  std::atomic<std::size_t> next{0};
+  const auto worker = [&] {
+    for (std::size_t at = next.fetch_add(1, std::memory_order_relaxed); at < order.size();
+         at = next.fetch_add(1, std::memory_order_relaxed)) {
+      const std::size_t index = order[at];
+      scheduled[index] =
+          units_[index]->schedule_buffered(scheduler_resident_waves_, memory, results[index]) ? 1 : 0;
+    }
+  };
+  const std::size_t threads = std::min(scheduler_threads(tuning_.scheduler.host_thread_budget), order.size());
+  if (threads <= 1) {
+    worker();
+  } else {
+    std::vector<std::thread> pool;
+    pool.reserve(threads - 1);
+    try {
+      for (std::size_t thread = 1; thread < threads; ++thread)
+        pool.emplace_back(worker);
+    } catch (const std::system_error &) {
+      // No more threads: the ones started, and this one, take the rest.
+    }
+    worker();
+    for (std::thread &thread : pool)
+      thread.join();
+  }
+  for (std::size_t index = 0; index < units_.size(); ++index)
+    if (scheduled[index] != 0)
+      units_[index]->apply_schedule(results[index]);
+}
+
 void DispatchDes::end() {
   std::uint64_t issue_bound = 0;
   std::uint64_t latency_bound = 0;
@@ -253,13 +344,13 @@ void DispatchDes::end() {
           std::min<std::uint64_t>(std::max<std::uint64_t>(1, tuning_.compute_units), memory.workgroups));
       with_memory = &memory;
     }
+    // The occupancy limit, not what the unit happened to hold: workgroups
+    // launch into it as earlier ones retire.
+    schedule_units(with_memory);
     std::vector<UnitEnd> ends;
     for (ComputeUnitDes *unit : units_) {
       if (unit == nullptr)
         continue;
-      // The occupancy limit, not what the unit happened to hold: workgroups
-      // launch into it as earlier ones retire.
-      unit->run_schedule(scheduler_resident_waves_, with_memory);
       const ComputeUnitDes::Occupancy &occupancy = unit->occupancy();
       if (occupancy.scheduled_waves == 0)
         continue;
