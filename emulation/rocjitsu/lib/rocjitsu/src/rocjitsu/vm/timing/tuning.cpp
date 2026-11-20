@@ -130,6 +130,59 @@ public:
     return found->second;
   }
 
+  /// @brief A value with a default that is not a guess; reported either way.
+  double measured(std::string_view key, double fallback) {
+    const std::string name(key);
+    const auto found = machine_.find(name);
+    if (found == machine_.end()) {
+      tuning_.fell_back.push_back(name + " (measured default " + std::to_string(fallback) + ")");
+      return fallback;
+    }
+    char *end = nullptr;
+    const double parsed = std::strtod(found->second.c_str(), &end);
+    if (end == found->second.c_str() || !(parsed >= 0.0)) {
+      util::Logger::warn("timing: machine." + name + " is not a number, using the measured default");
+      tuning_.fell_back.push_back(name);
+      return fallback;
+    }
+    tuning_.resolved.push_back(name + " = " + found->second);
+    return parsed;
+  }
+
+  bool measured_flag(std::string_view key, bool fallback) {
+    const std::string name(key);
+    const auto found = machine_.find(name);
+    if (found == machine_.end()) {
+      tuning_.fell_back.push_back(name + (fallback ? " (default true)" : " (default false)"));
+      return fallback;
+    }
+    tuning_.resolved.push_back(name + " = " + found->second);
+    return found->second == "true" || found->second == "1";
+  }
+
+  /// @brief A comma-separated list of names (the config's lists are flattened away).
+  std::vector<std::string> names(std::string_view key, std::vector<std::string> fallback) {
+    const std::string name(key);
+    const auto found = machine_.find(name);
+    if (found == machine_.end()) {
+      tuning_.fell_back.push_back(name + " (measured default list)");
+      return fallback;
+    }
+    tuning_.resolved.push_back(name + " = " + found->second);
+    std::vector<std::string> out;
+    std::string current;
+    for (const char character : found->second + ",") {
+      if (character == ',') {
+        if (!current.empty())
+          out.push_back(current);
+        current.clear();
+      } else if (character != ' ' && character != '"') {
+        current += character;
+      }
+    }
+    return out;
+  }
+
   /// @brief Cycles to charge one instruction of @p cls on its issue port.
   ///
   /// @details A class the config does not name resolves to the largest issue
@@ -322,6 +375,130 @@ Tuning Tuning::parse(const std::string &config_json) {
       read.integer("dispatch.invalidate_cycles", kUnnamedLatencyCycles);
   tuning.workgroups_per_cycle = read.real("dispatch.workgroups_per_cycle", 0.001);
 
+  // The measured per-SIMD scheduler (measured_scheduler.h). Off unless the
+  // config or ROCJITSU_TIMING_SCHEDULER turns it on; its keys are only read
+  // (and reported) when it is on.
+  {
+    SchedulerTuning &s = tuning.scheduler;
+    s.enabled = read.flag("scheduler.enabled");
+    if (const char *env = std::getenv("ROCJITSU_TIMING_SCHEDULER"); env != nullptr && *env != '\0')
+      s.enabled = env[0] == '1' || env[0] == 't' || env[0] == 'T';
+    if (s.enabled) {
+      const SchedulerTuning d;
+      s.simds_per_cu = static_cast<std::uint64_t>(read.measured("scheduler.simds_per_cu", static_cast<double>(d.simds_per_cu)));
+      s.issue_interval_cycles = read.measured("scheduler.issue_interval_cycles", d.issue_interval_cycles);
+      s.long_encoding_interval_cycles = read.measured("scheduler.long_encoding_interval_cycles", d.long_encoding_interval_cycles);
+      s.valu_fast_cycles = read.measured("scheduler.valu.fast_cycles", d.valu_fast_cycles);
+      s.valu_fast_long_encoding_cycles = read.measured("scheduler.valu.fast_long_encoding_cycles", d.valu_fast_long_encoding_cycles);
+      s.valu_cycles = read.measured("scheduler.valu.cycles", d.valu_cycles);
+      s.valu_slow_cycles = read.measured("scheduler.valu.slow_cycles", d.valu_slow_cycles);
+      s.valu_fast_mnemonics = read.names("scheduler.valu.fast_mnemonics", d.valu_fast_mnemonics);
+      s.valu_slow_mnemonics = read.names("scheduler.valu.slow_mnemonics", d.valu_slow_mnemonics);
+      s.sgpr_operand_loses_double_rate = read.measured_flag("scheduler.valu.sgpr_operand_loses_double_rate", d.sgpr_operand_loses_double_rate);
+      s.cndmask32_cu_cycles = read.measured("scheduler.cndmask32.cu_cycles", d.cndmask32_cu_cycles);
+      s.cndmask32_wave_interval_cycles = read.measured("scheduler.cndmask32.wave_interval_cycles", d.cndmask32_wave_interval_cycles);
+      s.mfma_valu_hold_cycles = read.measured("scheduler.mfma.valu_hold_cycles", d.mfma_valu_hold_cycles);
+      s.mfma_valu_hold_legacy_cycles = read.measured("scheduler.mfma.valu_hold_legacy_cycles", d.mfma_valu_hold_legacy_cycles);
+      s.mfma_valu_hold_f32_extra_cycles = read.measured("scheduler.mfma.valu_hold_f32_extra_cycles", d.mfma_valu_hold_f32_extra_cycles);
+      s.valu_conversion_table = read.measured_flag("scheduler.valu.conversion_table", d.valu_conversion_table);
+      s.valu_pair = read.measured_flag("scheduler.valu.pair", d.valu_pair);
+      s.valu_pair_slot_cycles = read.measured("scheduler.valu.pair_slot_cycles", d.valu_pair_slot_cycles);
+      s.encoding_context = read.measured_flag("scheduler.encoding.context", d.encoding_context);
+      s.encoding_window = static_cast<std::uint64_t>(read.measured("scheduler.encoding.window", static_cast<double>(d.encoding_window)));
+      s.encoding_short_share = read.measured("scheduler.encoding.short_share", d.encoding_short_share);
+      s.cndmask32_saturation = read.measured_flag("scheduler.cndmask32.saturation", d.cndmask32_saturation);
+      s.cndmask32_saturated_valu_cycles = read.measured("scheduler.cndmask32.saturated_valu_cycles", d.cndmask32_saturated_valu_cycles);
+      s.cndmask32_saturation_hold_cycles = read.measured("scheduler.cndmask32.saturation_hold_cycles", d.cndmask32_saturation_hold_cycles);
+      s.mfma_f64_rule = read.measured_flag("scheduler.mfma.f64_rule", d.mfma_f64_rule);
+      s.mfma_f64_16x16x4_cycles = read.measured("scheduler.mfma.f64_16x16x4_cycles", d.mfma_f64_16x16x4_cycles);
+      s.mfma_f64_4x4x4_cycles = read.measured("scheduler.mfma.f64_4x4x4_cycles", d.mfma_f64_4x4x4_cycles);
+      s.salu_cycles = read.measured("scheduler.salu_cycles", d.salu_cycles);
+      s.lds_read_hold_cycles = read.measured("scheduler.lds.read_hold_cycles", d.lds_read_hold_cycles);
+      s.lds_read_b128_hold_cycles = read.measured("scheduler.lds.read_b128_hold_cycles", d.lds_read_b128_hold_cycles);
+      s.lds_write_bytes_per_cycle = read.measured("scheduler.lds.write_bytes_per_cycle", d.lds_write_bytes_per_cycle);
+      s.lds_read_b64_wave_cycles = read.measured("scheduler.lds.read_b64_wave_cycles", d.lds_read_b64_wave_cycles);
+      s.lds_read_b128_wave_cycles = read.measured("scheduler.lds.read_b128_wave_cycles", d.lds_read_b128_wave_cycles);
+      s.lds_permute_cycles = read.measured("scheduler.lds.permute_cycles", d.lds_permute_cycles);
+      s.lds_permute_wave_cycles = read.measured("scheduler.lds.permute_wave_cycles", d.lds_permute_wave_cycles);
+      s.lds_dma_cycles = read.measured("scheduler.lds.dma_cycles", d.lds_dma_cycles);
+      s.vmem_min_hold_cycles = read.measured("scheduler.vmem.min_hold_cycles", d.vmem_min_hold_cycles);
+      s.vmem_load_bytes_per_cycle = read.measured("scheduler.vmem.load_bytes_per_cycle", d.vmem_load_bytes_per_cycle);
+      s.vmem_store_bytes_per_cycle = read.measured("scheduler.vmem.store_bytes_per_cycle", d.vmem_store_bytes_per_cycle);
+      s.nop_cycles_per_count = read.measured("scheduler.nop.cycles_per_count", d.nop_cycles_per_count);
+      s.nop_max_count = static_cast<std::uint64_t>(read.measured("scheduler.nop.max_count", static_cast<double>(d.nop_max_count)));
+      s.branch_not_taken_cycles = read.measured("scheduler.branch.not_taken_cycles", d.branch_not_taken_cycles);
+      s.branch_near_cycles = read.measured("scheduler.branch.near_cycles", d.branch_near_cycles);
+      s.branch_cached_cycles = read.measured("scheduler.branch.cached_cycles", d.branch_cached_cycles);
+      s.branch_miss_cycles = read.measured("scheduler.branch.miss_cycles", d.branch_miss_cycles);
+      s.fetch_line_bytes = static_cast<std::uint64_t>(read.measured("scheduler.branch.fetch_line_bytes", static_cast<double>(d.fetch_line_bytes)));
+      s.barrier_release_cycles = read.measured("scheduler.barrier.release_cycles", d.barrier_release_cycles);
+      s.bandwidth_floor = read.measured_flag("scheduler.bandwidth_floor", d.bandwidth_floor);
+      s.bandwidth_floor_with_queue = read.measured_flag("scheduler.bandwidth_floor_with_queue", d.bandwidth_floor_with_queue);
+      s.vmem_address_unit = read.measured_flag("scheduler.vmem.address_unit", d.vmem_address_unit);
+      s.vmem_address_bytes_per_cycle = read.measured("scheduler.vmem.address_bytes_per_cycle", d.vmem_address_bytes_per_cycle);
+      for (std::size_t width = 0; width < s.vmem_scratch_cycles.size(); ++width)
+        s.vmem_scratch_cycles[width] = read.measured(
+            "scheduler.vmem.scratch_x" + std::to_string(width + 1) + "_cycles", d.vmem_scratch_cycles[width]);
+      s.vmem_store_ack_cycles = read.measured("scheduler.vmem.store_ack_cycles", d.vmem_store_ack_cycles);
+      s.memory_pc_average = read.measured_flag("scheduler.memory.pc_average", d.memory_pc_average);
+      s.memory_l2_min_latency_cycles = read.measured("scheduler.memory.l2_min_latency_cycles", d.memory_l2_min_latency_cycles);
+      s.memory_far_min_latency_cycles = read.measured("scheduler.memory.far_min_latency_cycles", d.memory_far_min_latency_cycles);
+      s.memory_far_target = read.measured_flag("scheduler.memory.far_target", d.memory_far_target);
+      s.memory_far_latency_cycles = read.measured("scheduler.memory.far_latency_cycles", d.memory_far_latency_cycles);
+      s.memory_l2_latency_cycles = read.measured("scheduler.memory.l2_latency_cycles", d.memory_l2_latency_cycles);
+      s.memory_queue = read.measured_flag("scheduler.memory.queue", d.memory_queue);
+      s.memory_line_bytes = read.measured("scheduler.memory.line_bytes", d.memory_line_bytes);
+      s.memory_l2_read_bytes_per_cycle = read.measured("scheduler.memory.l2_read_bytes_per_cycle", d.memory_l2_read_bytes_per_cycle);
+      s.memory_l2_write_bytes_per_cycle = read.measured("scheduler.memory.l2_write_bytes_per_cycle", d.memory_l2_write_bytes_per_cycle);
+      s.memory_far_read_bytes_per_cycle = read.measured("scheduler.memory.far_read_bytes_per_cycle", d.memory_far_read_bytes_per_cycle);
+      s.memory_far_write_bytes_per_cycle = read.measured("scheduler.memory.far_write_bytes_per_cycle", d.memory_far_write_bytes_per_cycle);
+      s.memory_cu_link_bytes_per_cycle = read.measured("scheduler.memory.cu_link_bytes_per_cycle", d.memory_cu_link_bytes_per_cycle);
+      s.memory_demand_share = read.measured_flag("scheduler.memory.demand_share", d.memory_demand_share);
+      s.memory_saturated_device = read.measured_flag("scheduler.memory.saturated_device", d.memory_saturated_device);
+      s.memory_saturated_iterations = static_cast<std::uint64_t>(read.measured("scheduler.memory.saturated_iterations", static_cast<double>(d.memory_saturated_iterations)));
+      s.memory_slowest_line = read.measured_flag("scheduler.memory.slowest_line", d.memory_slowest_line);
+      s.memory_outstanding_requests = static_cast<std::uint64_t>(read.measured("scheduler.memory.outstanding_requests", static_cast<double>(d.memory_outstanding_requests)));
+      s.memory_merge_misses = read.measured_flag("scheduler.memory.merge_misses", d.memory_merge_misses);
+      s.simd_slots = read.measured_flag("scheduler.launch.simd_slots", d.simd_slots);
+      s.slot_release_at_completion = read.measured_flag("scheduler.launch.slot_release_at_completion", d.slot_release_at_completion);
+      s.workgroup_launch_cycles = read.measured("scheduler.launch.workgroup_cycles", d.workgroup_launch_cycles);
+      s.spin_collapse = read.measured_flag("scheduler.spin.collapse", d.spin_collapse);
+      s.spin_min_iterations = static_cast<std::uint64_t>(read.measured("scheduler.spin.min_iterations", static_cast<double>(d.spin_min_iterations)));
+      s.spin_poll_cycles = read.measured("scheduler.spin.poll_cycles", d.spin_poll_cycles);
+      s.kernel_time = read.measured_flag("scheduler.kernel.enabled", d.kernel_time);
+      s.kernel_queued = read.choice("scheduler.kernel.regime", "queued") != "idle_gap";
+      s.kernel_queued_head_us = read.measured("scheduler.kernel.queued_head_us", d.kernel_queued_head_us);
+      s.kernel_queued_tail_us = read.measured("scheduler.kernel.queued_tail_us", d.kernel_queued_tail_us);
+      s.kernel_queued_floor_us = read.measured("scheduler.kernel.queued_floor_us", d.kernel_queued_floor_us);
+      s.kernel_head_us = read.measured("scheduler.kernel.head_us", d.kernel_head_us);
+      s.kernel_xcd_stagger_us = read.measured("scheduler.kernel.xcd_stagger_us", d.kernel_xcd_stagger_us);
+      s.kernel_ramp_us_per_workgroup = read.measured("scheduler.kernel.ramp_us_per_workgroup", d.kernel_ramp_us_per_workgroup);
+      s.kernel_ramp_us_per_wave = read.measured("scheduler.kernel.ramp_us_per_wave", d.kernel_ramp_us_per_wave);
+      s.kernel_tail_us = read.measured("scheduler.kernel.tail_us", d.kernel_tail_us);
+      s.kernel_tail_us_per_resident_wave = read.measured("scheduler.kernel.tail_us_per_resident_wave", d.kernel_tail_us_per_resident_wave);
+      s.kernel_tail_single_xcd_us = read.measured("scheduler.kernel.tail_single_xcd_us", d.kernel_tail_single_xcd_us);
+      s.kernel_writeback_us_per_mb = read.measured("scheduler.kernel.writeback_us_per_mb", d.kernel_writeback_us_per_mb);
+      s.kernel_writeback_cap_us = read.measured("scheduler.kernel.writeback_cap_us", d.kernel_writeback_cap_us);
+      s.kernel_floor_all_xcds_us = read.measured("scheduler.kernel.floor_all_xcds_us", d.kernel_floor_all_xcds_us);
+      s.kernel_floor_us = read.measured("scheduler.kernel.floor_us", d.kernel_floor_us);
+      s.power_clock = read.measured_flag("scheduler.power.enabled", d.power_clock);
+      s.power_limit_watts = read.measured("scheduler.power.limit_watts", d.power_limit_watts);
+      s.power_reference_mhz = read.measured("scheduler.power.reference_mhz", d.power_reference_mhz);
+      s.power_mfma_f8_32x32x64_nj = read.measured("scheduler.power.mfma_f8_32x32x64_nj", d.power_mfma_f8_32x32x64_nj);
+      s.power_mfma_f8_16x16x128_nj = read.measured("scheduler.power.mfma_f8_16x16x128_nj", d.power_mfma_f8_16x16x128_nj);
+      s.power_mfma_bf16_32x32x16_nj = read.measured("scheduler.power.mfma_bf16_32x32x16_nj", d.power_mfma_bf16_32x32x16_nj);
+      s.power_mfma_f32_32x32x2_nj = read.measured("scheduler.power.mfma_f32_32x32x2_nj", d.power_mfma_f32_32x32x2_nj);
+      s.power_valu_fma_nj = read.measured("scheduler.power.valu_fma_nj", d.power_valu_fma_nj);
+      s.power_valu_pk_f32_nj = read.measured("scheduler.power.valu_pk_f32_nj", d.power_valu_pk_f32_nj);
+      s.power_lds_pj_per_byte = read.measured("scheduler.power.lds_pj_per_byte", d.power_lds_pj_per_byte);
+      s.power_l2_pj_per_byte = read.measured("scheduler.power.l2_pj_per_byte", d.power_l2_pj_per_byte);
+      s.power_fabric_pj_per_byte = read.measured("scheduler.power.fabric_pj_per_byte", d.power_fabric_pj_per_byte);
+      s.spin_min_iterations = std::max<std::uint64_t>(2, s.spin_min_iterations);
+      s.simds_per_cu = std::max<std::uint64_t>(1, s.simds_per_cu);
+      s.fetch_line_bytes = std::max<std::uint64_t>(1, s.fetch_line_bytes);
+    }
+  }
+
   std::sort(tuning.resolved.begin(), tuning.resolved.end());
   std::sort(tuning.fell_back.begin(), tuning.fell_back.end());
   return tuning;
@@ -331,6 +508,8 @@ void Tuning::write_report(std::string &out) const {
   out += "timing plane: ";
   out += enabled ? "enabled" : "disabled";
   out += "\nshader clock: " + std::to_string(clock_mhz) + " MHz\n";
+  out += std::string("composition: ") +
+         (scheduler.enabled ? "measured per-SIMD scheduler" : "closed-form terms") + "\n";
   out += "parameters in effect (" + std::to_string(resolved.size()) + "):\n";
   for (const std::string &entry : resolved)
     out += "  machine." + entry + "\n";

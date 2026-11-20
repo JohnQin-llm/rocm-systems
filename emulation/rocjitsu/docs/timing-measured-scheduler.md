@@ -8,7 +8,7 @@ cycle by cycle, and every rule is a measured hardware fact rather than a fitted 
 | | |
 | --- | --- |
 | **What** | Replace the fitted closed-form composition of [timing.md](timing.md) with a per-SIMD scheduler plus measured kernel-level terms (launch, XCD stagger, teardown, write-back). |
-| **Status** | **Prototype.** Runs as an offline replay over instruction streams exported by the emulator. A C++ port is in progress on a separate branch behind `scheduler.enabled` (default off), not merged. The shipped composition is unchanged. |
+| **Status** | **Prototype.** Runs as an offline replay over instruction streams exported by the emulator. A C++ port of the frozen model is on a separate branch behind `scheduler.enabled` (default off), not merged. It matches the replay within one cycle per CU and scores 7.8% / 94% queued on the development data, as the replay does. With the scheduler off, the shipped composition changes only through a wave-identity fix ([§7.4](#74-c-port)). |
 | **Headline: held-out set 9, scored once** | 95 library calls on new shapes; model frozen and scoring pre-registered before the run ([§9.3](#93-held-out-set-9)). **Queued reference (primary): median \|pred/meas − 1\| 7.8%, 91% within 25%**, median ratio 0.96. Idle-gap reference: 7.3%, 94%, 0.96. |
 | **Development data (in-sample)** | 85 single-kernel items: queued 7.8% / 94%, idle gap 6.1% / 95% ([§9.1](#91-development-data)). In the same metric, held-out is about one point worse than development (8.5% vs 7.8% queued). Nothing is fitted except one power limit, which an independent measurement confirms ([§4.7](#47-occupancy-workgroup-launch-clock)). The shipped fitted composition scores 19.6% / 56.5% on the same 85 items, also in-sample (its knobs were fitted on this data). |
 | **Ranking** | On 5 tuning problems × 76 configs, the true best config is always in the model's top 3 ([§9.4](#94-ranking-test)). |
@@ -405,10 +405,12 @@ the stall cause of every non-issue cycle ([§3.2](#32-one-scheduling-step)).
 The rule tables become tuning data in the config, each entry citing its measurement; the shipped
 composition stays selectable.
 
-Port status: separate branch, behind `scheduler.enabled` (default off), not merged. On 6 items it
-matches the Python replay within 1 cycle per CU. It implements the development model before the rules of
-[§4.8](#48-rules-added-for-the-frozen-model), plus the power-limited clock; with the scheduler off, the
-shipped composition's results are unchanged.
+Port status: separate branch, behind `scheduler.enabled` (or `ROCJITSU_TIMING_SCHEDULER=1`), default
+off, not merged. It implements the frozen model: every rule of [§4](#4-measured-rules-mi355x), including
+[§4.8](#48-rules-added-for-the-frozen-model), both kernel-time regimes and the power-limited clock. Each
+rule is a `scheduler.*` key whose default is the measured value, with its source noted in `tuning.h`;
+`configs/tuning/gfx950_mi355x_measured.json` lists them all. Exact-number unit tests pin each rule
+(`tests/timing/measured_scheduler_test.cpp`, 69 tests).
 
 | Part | Status |
 | --- | --- |
@@ -423,8 +425,58 @@ shipped composition's results are unchanged.
 | Slot release at store completion, 180-cycle relaunch | ported |
 | Outstanding-request cap (≈118 per CU), L2 read bandwidth | ported |
 | Power-limited clock | ported |
-| Rules of [§4.8](#48-rules-added-for-the-frozen-model) | to port |
-| Queued kernel rule ([§5.2](#52-queued-behind-another-kernel)) | to port |
+| Rules of [§4.8](#48-rules-added-for-the-frozen-model) | ported |
+| Queued kernel rule ([§5.2](#52-queued-behind-another-kernel)) | ported; `scheduler.kernel.regime` = `queued` (default) or `idle_gap` |
+
+The memory accesses still reach the caches on each wavefront's own timeline. The scheduler runs over the
+buffered streams at dispatch end, as the replay does over the export, so issuing accesses at the
+scheduled cycle (above) is not done yet.
+
+**Check against the replay.** Eight items were run with every CU exported, and the frozen replay was
+run on the same records with the frozen switches: rmsnorm, two Triton matmuls, causal attention, two fp8
+matmuls, swiglu `sw4096x4096 b512_w4` and softmax `sm9216x768 w16_r8_c1`. Two of the matmuls
+(`f8m4096n1024k1024 m32_n64_k64_w8_s2` and `mm2560x1536x768 m64_n64_k64_w8_s2`) are power-throttled.
+
+- Every CU's end agrees to within 0 to +1 cycle; the C++ rounds up to a whole cycle.
+- Occupancy, saturated units, kernel energy (ratio 1.000000) and the throttled clock agree. The two
+  throttled items run at 1688 and 1763 MHz.
+
+**Development score.** The C++ path, with its dispatch `cycles` as the prediction, against the queued
+reference on the 85 single-kernel items:
+
+| | Median error | Within 25% | Median ratio |
+| --- | --- | --- | --- |
+| C++ port | 7.8% | 94% | 0.97 |
+| Python replay | 7.8% | 94% | 0.96 |
+
+Per item, the median C++ / Python ratio is 1.000, and 78 of 85 items are within 5%. The C++ path
+schedules every CU, whereas the replay uses the sampled ones, and it reads its own emulator run. The
+largest differences:
+
+- hipBLASLt `m256_n1536_k1536_f16`: +14%. Affected by the wave-identity fix below.
+- `rms4096x4096 w2_r2` and two hipBLASLt GEMMs: +6–8%.
+- The two throttled fp8 matmuls: +5%.
+
+**Effect with the scheduler off.** `ComputeUnitDes` used to keep one `WaveTimeline` per slot, so
+workgroups folded onto one modelled CU shared timelines whenever the functional plane interleaved them.
+Timelines are now keyed by (workgroup, slot). On the 95 development items with the shipped fitted
+configuration, 9 items get 2–45% faster (beyond the run-to-run noise of ≤1.6%), all of them kernels that
+fold several workgroups onto one CU. The shipped composition's queued error goes from 19.6% / 56.5% to
+19.2% / 58.8%.
+
+**Deliberate differences from the replay:**
+
+- Write-back uses the L2's dirty bytes at release.
+- Per-pc means, the energy mix and spin partners are taken over all modelled CUs.
+- The ramp's first round uses the occupancy limit.
+- A load to LDS is recognised by its empty destination list, as in the replay. The emulator's
+  `lds_dst` flag is not plumbed into `RetiredInstruction`.
+- The emulator's own LDS cost of a permute (1 cycle, from the `touched_nothing` branch) is unchanged;
+  the permute rule replaces it. Moving the permute branch first would change the shipped composition.
+
+Still open: multi-kernel calls ([§5.4](#54-multi-kernel-library-calls)) are timed per dispatch, and
+`R7B_DEV=max` is not ported. On the largest development kernel (swiglu `sw16384x1408`) the scheduler
+makes the emulator run about 7 times longer.
 
 ## 8. How rules are obtained and validated
 
@@ -641,12 +693,11 @@ faster way to tune.
 | Energy table | Consistent with *C* but not exact per operation; ≈20% of real-kernel power unexplained ([§4.7](#47-occupancy-workgroup-launch-clock)) |
 | Bandwidth in the last round of a grid that only partly fills the CUs | Not modelled |
 | Instruction fetch beyond the branch rule | Not modelled |
-| C++ port | Rules of [§4.8](#48-rules-added-for-the-frozen-model) and the queued kernel rule still to port ([§7.4](#74-c-port)) |
+| C++ port | Frozen model ported and checked against the replay; same development score. Multi-kernel calls are still timed per dispatch ([§7.4](#74-c-port)). |
 
 Plan:
 
-1. Port the remaining rules to C++ ([§7.4](#74-c-port)) and check that it reproduces the replay on all
-   items.
+1. Merge the C++ port ([§7.4](#74-c-port)) behind its switch.
 2. Add the measured round-2 rules (dispatcher, relaunch delay, dirty-byte count) under the same inclusion
    rule, on development data only, then score them once on a new held-out set.
 
