@@ -564,6 +564,7 @@ add_executable(
     dbi/dbi_log_record_sim_test.cpp
     dbi/kernarg_sgpr_slot_test.cpp
     timing/timing_model_test.cpp
+    timing/measured_scheduler_test.cpp
     code/code_object_target_id_test.cpp
     code/executable_test.cpp
     code/file_loading_test.cpp

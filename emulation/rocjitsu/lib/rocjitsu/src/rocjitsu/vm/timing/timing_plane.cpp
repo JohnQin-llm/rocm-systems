@@ -186,6 +186,21 @@ void TimingPlane::trace_dispatch(const DispatchDes &dispatch) {
   number("pid", static_cast<unsigned long long>(::getpid()));
   number("device_cycles", static_cast<unsigned long long>(current_cycles()));
   number("cycles", static_cast<unsigned long long>(dispatch.cycles()));
+  number("scheduled", static_cast<unsigned long long>(terms.scheduled));
+  number("composed", static_cast<unsigned long long>(terms.composed));
+  if (tuning_.scheduler.enabled) {
+    number("spin_units", static_cast<unsigned long long>(terms.spin_units));
+    number("occupancy", static_cast<unsigned long long>(terms.occupancy));
+    number("saturated_units", static_cast<unsigned long long>(terms.saturated_units));
+    number("kernel_head", static_cast<unsigned long long>(terms.kernel_head));
+    number("kernel_stagger", static_cast<unsigned long long>(terms.kernel_stagger));
+    number("kernel_ramp", static_cast<unsigned long long>(terms.kernel_ramp));
+    number("kernel_tail", static_cast<unsigned long long>(terms.kernel_tail));
+    number("kernel_writeback", static_cast<unsigned long long>(terms.kernel_writeback));
+    number("kernel_floor", static_cast<unsigned long long>(terms.kernel_floor));
+    number("kernel_energy_nj", static_cast<unsigned long long>(terms.kernel_energy_nj));
+    number("kernel_clock_khz", static_cast<unsigned long long>(terms.kernel_clock_khz));
+  }
   number("fixed", static_cast<unsigned long long>(terms.fixed));
   number("issue", static_cast<unsigned long long>(terms.issue));
   number("bandwidth", static_cast<unsigned long long>(terms.bandwidth));
@@ -419,7 +434,7 @@ void TimingPlane::wave_begin(std::uint32_t compute_unit, std::uint32_t slot,
     record.wg = compute_unit;
     istream_write(record);
   }
-  compute_units_[unit]->wave_begin(slot);
+  compute_units_[unit]->wave_begin(compute_unit, slot);
 }
 
 void TimingPlane::instruction(std::uint32_t compute_unit, std::uint32_t slot,
@@ -427,7 +442,7 @@ void TimingPlane::instruction(std::uint32_t compute_unit, std::uint32_t slot,
   if (!tuning_.enabled || compute_units_.empty())
     return;
   istream_wg_ = compute_unit;
-  compute_units_[fold_unit(compute_unit)]->instruction(slot, retired);
+  compute_units_[fold_unit(compute_unit)]->instruction(compute_unit, slot, retired);
 }
 
 void TimingPlane::wave_end(std::uint32_t compute_unit, std::uint32_t slot) {
@@ -442,7 +457,7 @@ void TimingPlane::wave_end(std::uint32_t compute_unit, std::uint32_t slot) {
     record.wg = compute_unit;
     istream_write(record);
   }
-  compute_units_[unit]->wave_end(slot);
+  compute_units_[unit]->wave_end(compute_unit, slot);
 }
 
 void TimingPlane::forward_to_channels(const MemoryRequest &request) {

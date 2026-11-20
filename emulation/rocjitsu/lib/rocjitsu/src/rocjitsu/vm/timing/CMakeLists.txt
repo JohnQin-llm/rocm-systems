@@ -21,6 +21,7 @@ rj_add_object_library(
     dispatch_des.cpp
     dram_des.cpp
     engine.cpp
+    measured_scheduler.cpp
     timed_component.cpp
     timing_plane.cpp
     tuning.cpp

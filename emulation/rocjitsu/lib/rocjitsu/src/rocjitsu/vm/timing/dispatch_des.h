@@ -234,6 +234,31 @@ public:
     std::uint64_t fabric_cycles = 0;
     std::uint64_t mall_cycles = 0;
     std::uint64_t dram_cycles = 0;
+    /// @brief Measured scheduler: the slowest compute unit's scheduled
+    ///        duration (zero when the scheduler is off), and the duration the
+    ///        closed-form composition gave, kept for comparison either way.
+    std::uint64_t scheduled = 0;
+    std::uint64_t composed = 0;
+    /// @brief Measured scheduler: units held for a stream-K partner, and the
+    ///        kernel-level terms around the slowest unit (cycles; zero unless
+    ///        scheduler.kernel.enabled). kernel_floor is the minimum that
+    ///        applied, whether or not it bound.
+    std::uint64_t spin_units = 0;
+    /// @brief Measured scheduler: wavefronts a unit holds (occupancy_waves()),
+    ///        and units whose memory queue the saturated-device rule set.
+    std::uint64_t occupancy = 0;
+    std::uint64_t saturated_units = 0;
+    std::uint64_t kernel_head = 0;
+    std::uint64_t kernel_stagger = 0;
+    std::uint64_t kernel_ramp = 0;
+    std::uint64_t kernel_tail = 0;
+    std::uint64_t kernel_writeback = 0;
+    std::uint64_t kernel_floor = 0;
+    /// @brief Measured scheduler, power-limited clock: the kernel's XCD
+    ///        dynamic energy (nJ) and the clock its body ran at (kHz; the
+    ///        configured clock unless the power limit bound).
+    std::uint64_t kernel_energy_nj = 0;
+    std::uint64_t kernel_clock_khz = 0;
   };
   const Terms &terms() const { return terms_; }
 
@@ -254,6 +279,9 @@ public:
   const DispatchShape &shape() const { return shape_; }
   /// @brief Wavefronts one compute unit holds at once for this dispatch.
   std::uint64_t resident_waves() const { return resident_waves_; }
+  /// @brief The same for the measured scheduler: kernel_eval5 occ_limit
+  ///        (per-SIMD registers, whole workgroups).
+  std::uint64_t scheduler_resident_waves() const { return scheduler_resident_waves_; }
   std::uint64_t waves() const { return waves_; }
   std::uint64_t instructions() const { return instructions_; }
   std::uint64_t stall_cycles() const { return stall_cycles_; }
@@ -267,6 +295,7 @@ private:
   ///        first wavefront to execute may be on any partition thread.
   std::atomic<bool> acquired_{false};
   std::uint64_t resident_waves_ = 1;
+  std::uint64_t scheduler_resident_waves_ = 1;
   std::uint64_t cycles_ = 0;
   std::uint64_t flush_bytes_ = 0;
   std::uint64_t waves_ = 0;

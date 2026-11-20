@@ -33,12 +33,17 @@
 #include <array>
 #include <cstdint>
 #include <deque>
+#include <memory>
+#include <unordered_map>
 #include <string>
 #include <vector>
 
 namespace rocjitsu::timing {
 
 class TimingPlane;
+class ScheduleRecorder;
+struct ScheduleResult;
+struct DispatchMemory;
 
 /// @brief The register files a dependency can name.
 ///
@@ -181,16 +186,28 @@ class ComputeUnitDes final : public TimedComponent {
 public:
   ComputeUnitDes(std::string name, const simdojo::ClockDomain &domain, TimingEngine &engine,
                  const Tuning &tuning, TimingPlane &plane, std::uint32_t index);
+  ~ComputeUnitDes() override;
 
   std::uint64_t advance(std::uint64_t now) override;
 
-  void wave_begin(std::uint32_t slot);
-  void instruction(std::uint32_t slot, const RetiredInstruction &retired);
-  void wave_end(std::uint32_t slot);
+  /// @brief A wavefront is (workgroup, slot): several workgroups fold onto
+  ///        one modelled unit and reuse slot numbers, so the slot alone does
+  ///        not identify a wavefront. Each gets its own timeline.
+  void wave_begin(std::uint32_t workgroup, std::uint32_t slot);
+  void instruction(std::uint32_t workgroup, std::uint32_t slot, const RetiredInstruction &retired);
+  void wave_end(std::uint32_t workgroup, std::uint32_t slot);
   /// @brief Every wavefront in a group leaves a barrier at the cycle the
   ///        slowest one reached. Knowable only for the group, which is why it
   ///        arrives as one.
-  void barrier(const std::vector<std::uint32_t> &slots);
+  void barrier(std::uint32_t workgroup, const std::vector<std::uint32_t> &slots);
+
+  /// @brief Run the measured scheduler over what this unit buffered for the
+  ///        dispatch and record the result in occupancy().scheduled_cycles.
+  ///        No-op unless Tuning::scheduler.enabled. @p memory, when given,
+  ///        carries the dispatch-wide per-pc memory model (memory.pc_average).
+  void run_schedule(std::uint64_t resident_waves, const DispatchMemory *memory = nullptr);
+  /// @brief The buffered streams; null when the scheduler is off.
+  const ScheduleRecorder *recorder() const { return recorder_.get(); }
 
   /// @brief Cycles this unit was occupied for the dispatch just finished, and
   ///        the terms that produced it.
@@ -215,6 +232,17 @@ public:
     std::array<std::uint64_t, kNumFunctionalUnits> unit_cycles{};
     /// @brief Instructions retired per class.
     std::array<std::uint64_t, kNumInstClasses> class_counts{};
+    /// @brief Measured scheduler: cycle the unit's last wavefront retired, and
+    ///        the sum of wavefront lifetimes. Zero when the scheduler is off.
+    std::uint64_t scheduled_cycles = 0;
+    std::uint64_t scheduled_wave_cycles = 0;
+    /// @brief The same end unrounded, the wavefronts scheduled, and the cycle
+    ///        the unit reached its collapsed stream-K spin (negative if none).
+    double scheduled_end = 0.0;
+    std::uint64_t scheduled_waves = 0;
+    double spin_arrival = -1.0;
+    /// @brief The saturated-device rule set the unit's memory queue.
+    bool scheduled_saturated = false;
   };
   const Occupancy &occupancy() const { return occupancy_; }
   void reset_occupancy();
@@ -225,8 +253,22 @@ private:
   const Tuning &tuning_;
   TimingPlane &plane_;
   std::uint32_t index_ = 0;
+  /// @brief The timeline of (workgroup, slot), allocating one if it is new.
+  WaveTimeline &timeline(std::uint32_t workgroup, std::uint32_t slot);
+  /// @brief The live timeline of (workgroup, slot), or null.
+  WaveTimeline *find_timeline(std::uint32_t workgroup, std::uint32_t slot);
+
+  /// @brief Pool of timelines, reused across wavefronts so their scoreboard
+  ///        storage is allocated once; live_ maps (workgroup << 32 | slot) to
+  ///        an entry and free_ lists the entries no wavefront holds.
   std::vector<WaveTimeline> waves_;
+  std::unordered_map<std::uint64_t, std::uint32_t> live_;
+  std::vector<std::uint32_t> free_;
+  /// @brief Per-unit totals of every wavefront already retired.
+  WaveTimeline totals_;
   Occupancy occupancy_;
+  /// @brief Buffered streams for the measured scheduler; null when it is off.
+  std::unique_ptr<ScheduleRecorder> recorder_;
 };
 
 /// @brief LDS cycles for one access under the rule measured on MI355X

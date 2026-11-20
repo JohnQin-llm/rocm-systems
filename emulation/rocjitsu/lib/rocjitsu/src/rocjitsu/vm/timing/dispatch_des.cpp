@@ -3,6 +3,8 @@
 
 #include "rocjitsu/vm/timing/dispatch_des.h"
 
+#include "rocjitsu/vm/timing/measured_scheduler.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -169,6 +171,15 @@ std::uint64_t DispatchDes::advance(std::uint64_t now) {
 void DispatchDes::begin(const DispatchShape &shape) {
   shape_ = shape;
   resident_waves_ = resident_waves_for(tuning_, shape_);
+  OccupancyLimits limits;
+  limits.wave_slots = tuning_.wave_slots_per_cu;
+  limits.vector_registers = tuning_.vector_registers_per_cu;
+  limits.scalar_registers = tuning_.scalar_registers_per_cu;
+  limits.lds_bytes = tuning_.lds_bytes_per_cu;
+  limits.simds = tuning_.scheduler.simds_per_cu;
+  scheduler_resident_waves_ =
+      occupancy_waves(limits, shape_.vector_registers_per_wave, shape_.scalar_registers_per_wave,
+                      shape_.lds_bytes_per_workgroup, shape_.waves_per_workgroup);
   ledger_.reset();
   acquired_.store(false, std::memory_order_relaxed);
   cycles_ = 0;
@@ -205,6 +216,61 @@ void DispatchDes::end() {
   instructions_ = 0;
   stall_cycles_ = 0;
   terms_ = Terms{};
+
+  // The kernel's activity mix for the power-limited clock, taken from the
+  // buffered streams before the scheduler consumes them.
+  KernelEnergy energy;
+  // The measured scheduler replays each unit's buffered streams first, so its
+  // result is in the occupancy the loop below reads.
+  // A unit that reached a collapsed stream-K spin is then held for its
+  // partner's flag (hold_spinning_units); the slowest result is the body.
+  if (tuning_.scheduler.enabled) {
+    // The replay's memory model (memory.pc_average): every vector-memory pc
+    // costs its mean over all modelled units' wavefronts, with the beyond-L2
+    // share rescaled to the dispatch's fabric bytes / L2 bytes, and each
+    // unit queues it for its share of the device bandwidth.
+    const SchedulerTuning &scheduler = tuning_.scheduler;
+    PcMemoryTable pcs;
+    DispatchMemory memory;
+    const DispatchMemory *with_memory = nullptr;
+    if (scheduler.power_clock)
+      for (const ComputeUnitDes *unit : units_)
+        if (unit != nullptr && unit->recorder() != nullptr)
+          energy.add(unit->recorder()->rules(), unit->recorder()->waves());
+    if (scheduler.memory_pc_average) {
+      PcMemoryAverager averager;
+      for (const ComputeUnitDes *unit : units_)
+        if (unit != nullptr && unit->recorder() != nullptr)
+          averager.add(scheduler, unit->recorder()->rules(), unit->recorder()->waves());
+      const double far_target =
+          scheduler.memory_far_target && ledger_.l2_bytes() != 0
+              ? static_cast<double>(ledger_.fabric_bytes()) / static_cast<double>(ledger_.l2_bytes())
+              : -1.0;
+      pcs = averager.build(scheduler, far_target);
+      memory.pcs = &pcs;
+      memory.workgroups = std::max<std::uint64_t>(1, shape_.workgroup_count);
+      memory.active_cus = static_cast<double>(
+          std::min<std::uint64_t>(std::max<std::uint64_t>(1, tuning_.compute_units), memory.workgroups));
+      with_memory = &memory;
+    }
+    std::vector<UnitEnd> ends;
+    for (ComputeUnitDes *unit : units_) {
+      if (unit == nullptr)
+        continue;
+      // The occupancy limit, not what the unit happened to hold: workgroups
+      // launch into it as earlier ones retire.
+      unit->run_schedule(scheduler_resident_waves_, with_memory);
+      const ComputeUnitDes::Occupancy &occupancy = unit->occupancy();
+      if (occupancy.scheduled_waves == 0)
+        continue;
+      ends.push_back({occupancy.scheduled_end, occupancy.spin_arrival});
+      terms_.spin_units += occupancy.spin_arrival >= 0.0 ? 1 : 0;
+      terms_.saturated_units += occupancy.scheduled_saturated ? 1 : 0;
+    }
+    terms_.occupancy = scheduler_resident_waves_;
+    for (const double end : hold_spinning_units(ends, tuning_.scheduler.spin_poll_cycles))
+      terms_.scheduled = std::max(terms_.scheduled, static_cast<std::uint64_t>(std::ceil(end)));
+  }
 
   for (const ComputeUnitDes *unit : units_) {
     if (unit == nullptr)
@@ -451,6 +517,68 @@ void DispatchDes::end() {
   terms_.fixed = tuning_.dispatch_start_cycles + tuning_.launch_invalidate_cycles +
                  tuning_.dispatch_end_cycles;
   cycles_ = terms_.fixed + body;
+  terms_.composed = cycles_;
+
+  // The measured scheduler replaces the composed body: the slowest unit's
+  // scheduled duration, floored by the bandwidth bound only when the
+  // scheduler does not queue memory itself (applies_bandwidth_floor). Around it either the measured kernel-level terms
+  // (kernel_eval5 EVAL_KT: head, XCD stagger, ramp, tail, dirty write-back,
+  // minimum), or with those off the fixed launch terms plus the release flush.
+  // The composition above is still computed and reported as `composed`.
+  if (tuning_.scheduler.enabled && waves_ != 0) {
+    std::uint64_t scheduled_body = terms_.scheduled;
+    bound_by_ = "scheduled";
+    if (tuning_.scheduler.applies_bandwidth_floor() && bandwidth > scheduled_body) {
+      scheduled_body = bandwidth;
+      bound_by_ = ledger_.bound_level();
+    }
+    // Power-limited clock (kernel_eval5 EVAL_CLOCK=rule): the body runs at it.
+    const double joules =
+        tuning_.scheduler.power_clock
+            ? energy.joules(tuning_.scheduler, terms_.class_counts,
+                            static_cast<double>(ledger_.l2_bytes()),
+                            static_cast<double>(ledger_.fabric_bytes()))
+            : 0.0;
+    const double body_clock = power_clock_mhz(tuning_.scheduler, joules,
+                                              static_cast<double>(scheduled_body), tuning_.clock_mhz);
+    terms_.kernel_energy_nj = static_cast<std::uint64_t>(std::llround(joules * 1e9));
+    terms_.kernel_clock_khz = static_cast<std::uint64_t>(std::llround(body_clock * 1e3));
+    if (tuning_.scheduler.kernel_time) {
+      KernelShape kernel;
+      kernel.workgroups = shape_.workgroup_count;
+      kernel.waves_per_workgroup = shape_.waves_per_workgroup;
+      // What the dispatch trace reports as `resident` and kernel_eval5 reads
+      // for the tail; the ramp's first round uses the occupancy limit.
+      kernel.resident_waves =
+          terms_.resident != 0 ? terms_.resident : std::max<std::uint32_t>(1, shape_.waves_per_workgroup);
+      kernel.occupancy_waves = scheduler_resident_waves_;
+      kernel.compute_units = tuning_.compute_units;
+      kernel.xcds = tuning_.xcds;
+      kernel.slowest_unit_cycles = static_cast<double>(scheduled_body);
+      kernel.dirty_bytes = static_cast<double>(flush_bytes_);
+      kernel.clock_mhz = tuning_.clock_mhz;
+      kernel.body_clock_mhz = body_clock;
+      const KernelTime time = kernel_time(tuning_.scheduler, kernel);
+      const auto to_cycles = [&](double us) {
+        return static_cast<std::uint64_t>(std::llround(us * tuning_.clock_mhz));
+      };
+      terms_.kernel_head = to_cycles(time.head_us);
+      terms_.kernel_stagger = to_cycles(time.stagger_us);
+      terms_.kernel_ramp = to_cycles(time.ramp_us);
+      terms_.kernel_tail = to_cycles(time.tail_us);
+      terms_.kernel_writeback = to_cycles(time.writeback_us);
+      terms_.kernel_floor = to_cycles(time.floor_us);
+      cycles_ = time.cycles;
+      if (time.total_us <= time.floor_us)
+        bound_by_ = "floor";
+    } else {
+      // The body's cycles at the power-limited clock, in configured cycles.
+      cycles_ = terms_.fixed +
+                static_cast<std::uint64_t>(std::llround(static_cast<double>(scheduled_body) *
+                                                        tuning_.clock_mhz / std::max(1e-9, body_clock))) +
+                flush;
+    }
+  }
 }
 
 } // namespace rocjitsu::timing

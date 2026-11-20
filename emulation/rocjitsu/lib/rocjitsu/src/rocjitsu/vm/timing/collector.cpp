@@ -524,7 +524,7 @@ void TimingCollector::barrier_resolved(std::span<amdgpu::Wavefront *> waves) {
     while (index < members.size() && members[index].first == unit)
       slots.push_back(members[index++].second);
     plane_.istream_set_wg(unit);
-    plane_.compute_unit(unit).barrier(slots);
+    plane_.compute_unit(unit).barrier(unit, slots);
   }
 }
 

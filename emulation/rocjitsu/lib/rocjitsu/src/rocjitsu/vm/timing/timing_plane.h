@@ -59,7 +59,8 @@ namespace rocjitsu::timing {
 #pragma pack(push, 1)
 struct IStreamRecord {
   /// 0 instruction, 1 wave begin, 2 wave end, 3 barrier member, 4 dispatch
-  /// acquire, 5 dispatch end.
+  /// acquire, 5 dispatch end, 8 measured-scheduler result of one unit (a =
+  /// scheduled cycles, b = waves, pc = summed wavefront lifetimes).
   std::uint8_t type = 0;
   std::uint8_t inst_class = 0;
   std::uint8_t unit = 0;

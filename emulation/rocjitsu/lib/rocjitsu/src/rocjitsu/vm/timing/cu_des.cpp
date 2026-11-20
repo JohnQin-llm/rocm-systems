@@ -5,6 +5,7 @@
 
 #include "rocjitsu/vm/timing/classify.h"
 #include "rocjitsu/vm/timing/coalesce.h"
+#include "rocjitsu/vm/timing/measured_scheduler.h"
 #include "rocjitsu/vm/timing/timing_plane.h"
 #include "rocjitsu/vm/timing/vocabulary.h"
 
@@ -195,23 +196,6 @@ void write_destinations(WaveTimeline &wave, const Tuning &tuning, const Register
       file[reg] = ready_cycle;
   }
 }
-
-/// @brief The timeline of @p slot, folded into the configured slot count.
-WaveTimeline &timeline_for(std::vector<WaveTimeline> &waves, const Tuning &tuning,
-                           std::uint32_t slot) {
-  return waves[static_cast<std::size_t>(slot % slot_count(tuning))];
-}
-
-/// @brief The per-unit totals of every wavefront this unit has already retired.
-///
-/// @details Kept in one extra WaveTimeline past the addressable slots, because
-/// ComputeUnitDes::Occupancy carries the *reduced* issue figure rather than the
-/// per-unit breakdown it is reduced from, and the breakdown has to survive
-/// between wavefronts to be reduced correctly. Summing each wavefront's own
-/// reduction instead would over-charge: a sum of per-unit maxima is never
-/// smaller than the maximum of the per-unit sums, and on a kernel that
-/// alternates between two ports it is nearly double.
-WaveTimeline &retired_totals(std::vector<WaveTimeline> &waves) { return waves.back(); }
 
 /// @brief Scratch for one access's line addresses.
 ///
@@ -567,15 +551,45 @@ ComputeUnitDes::ComputeUnitDes(std::string name, const simdojo::ClockDomain &dom
                                std::uint32_t index)
     : TimedComponent(std::move(name), domain, engine), tuning_(tuning), plane_(plane),
       index_(index) {
-  // One entry per addressable wave slot, plus the retired-totals accumulator
-  // retired_totals() reads. See its comment for why that has to live somewhere.
-  waves_.resize(static_cast<std::size_t>(slot_count(tuning)) + 1);
-  for (WaveTimeline &wave : waves_) {
+  // Timelines are allocated as wavefronts arrive (see timeline()); the pool
+  // reaches the number of wavefronts that are live on this unit at once.
+  waves_.reserve(static_cast<std::size_t>(slot_count(tuning)));
+  if (tuning.scheduler.enabled)
+    recorder_ = std::make_unique<ScheduleRecorder>(tuning.scheduler);
+}
+
+ComputeUnitDes::~ComputeUnitDes() = default;
+
+WaveTimeline *ComputeUnitDes::find_timeline(std::uint32_t workgroup, std::uint32_t slot) {
+  const auto found = live_.find((static_cast<std::uint64_t>(workgroup) << 32) | slot);
+  return found == live_.end() ? nullptr : &waves_[found->second];
+}
+
+WaveTimeline &ComputeUnitDes::timeline(std::uint32_t workgroup, std::uint32_t slot) {
+  // Keyed by (workgroup, slot). Keying by slot alone -- the wavefront's index
+  // within its workgroup -- made every workgroup folded onto this unit share
+  // one timeline per slot, so a second workgroup's wave_begin reset the first
+  // one's wavefront mid-flight whenever the functional plane interleaved them.
+  const std::uint64_t key = (static_cast<std::uint64_t>(workgroup) << 32) | slot;
+  if (const auto found = live_.find(key); found != live_.end())
+    return waves_[found->second];
+  std::uint32_t index = 0;
+  if (!free_.empty()) {
+    index = free_.back();
+    free_.pop_back();
+  } else {
+    index = static_cast<std::uint32_t>(waves_.size());
+    waves_.emplace_back();
     for (std::size_t file = 0; file < kNumRegisterFiles; ++file) {
       const RegisterFile which = static_cast<RegisterFile>(file);
-      wave.register_ready[file].assign(static_cast<std::size_t>(file_share(tuning, which)), 0);
+      waves_.back().register_ready[file].assign(static_cast<std::size_t>(file_share(tuning_, which)), 0);
     }
   }
+  WaveTimeline &wave = waves_[index];
+  wave.reset();
+  wave.live = true;
+  live_.emplace(key, index);
+  return wave;
 }
 
 std::uint64_t ComputeUnitDes::advance(std::uint64_t now) {
@@ -589,20 +603,19 @@ std::uint64_t ComputeUnitDes::advance(std::uint64_t now) {
   return 0;
 }
 
-void ComputeUnitDes::wave_begin(std::uint32_t slot) {
-  WaveTimeline &wave = timeline_for(waves_, tuning_, slot);
+void ComputeUnitDes::wave_begin(std::uint32_t workgroup, std::uint32_t slot) {
+  WaveTimeline &wave = timeline(workgroup, slot);
   wave.reset();
   wave.live = true;
+  if (recorder_)
+    recorder_->wave_begin(workgroup, slot);
 }
 
-void ComputeUnitDes::instruction(std::uint32_t slot, const RetiredInstruction &retired) {
-  WaveTimeline &wave = timeline_for(waves_, tuning_, slot);
-  if (!wave.live) {
-    // A wavefront can reach the unit before anyone announced it. Starting it
-    // here keeps its work attributed rather than dropped.
-    wave.reset();
-    wave.live = true;
-  }
+void ComputeUnitDes::instruction(std::uint32_t workgroup, std::uint32_t slot,
+                                 const RetiredInstruction &retired) {
+  // A wavefront can reach the unit before anyone announced it; timeline()
+  // starts it here, which keeps its work attributed rather than dropped.
+  WaveTimeline &wave = timeline(workgroup, slot);
 
   const InstClass inst_class = retired.inst_class;
   const FunctionalUnit unit = unit_for_class(inst_class);
@@ -788,6 +801,9 @@ void ComputeUnitDes::instruction(std::uint32_t slot, const RetiredInstruction &r
   // accuracy a direct median-versus-maximum trade.
   wave.unit_cycles[index_of(FunctionalUnit::None)] +=
       tuning_.front_end_sixteenths[static_cast<std::size_t>(inst_class)];
+  if (recorder_)
+    recorder_->instruction(workgroup, slot, retired, occupancy, stream_latency, stream_counter,
+                           exposed_fetch, stream_lines);
   if (plane_.istream_wants(index_)) {
     IStreamRecord record;
     record.type = 0;
@@ -842,7 +858,7 @@ void ComputeUnitDes::instruction(std::uint32_t slot, const RetiredInstruction &r
   wave.class_counts[static_cast<std::size_t>(inst_class)] += 1;
 }
 
-void ComputeUnitDes::barrier(const std::vector<std::uint32_t> &slots) {
+void ComputeUnitDes::barrier(std::uint32_t workgroup, const std::vector<std::uint32_t> &slots) {
   if (plane_.istream_wants(index_)) {
     const std::uint32_t group = plane_.istream_next_barrier();
     for (const std::uint32_t slot : slots) {
@@ -862,25 +878,28 @@ void ComputeUnitDes::barrier(const std::vector<std::uint32_t> &slots) {
   // without this a kernel that barriers thousands of times per wavefront is
   // charged nothing for any of them.
   if (tuning_.barrier_cycles != 0)
-    for (std::uint32_t slot : slots) {
-      WaveTimeline &wave = timeline_for(waves_, tuning_, slot);
-      if (wave.live)
-        wave.cycle += tuning_.barrier_cycles;
-    }
+    for (std::uint32_t slot : slots)
+      if (WaveTimeline *wave = find_timeline(workgroup, slot))
+        wave->cycle += tuning_.barrier_cycles;
   // Every wavefront in the group leaves the barrier at the cycle the slowest
   // one reached, so the barrier costs the spread. Knowable only for the group,
   // which is why it arrives as one.
   std::uint64_t latest = 0;
   for (const std::uint32_t slot : slots)
-    latest = std::max(latest, timeline_for(waves_, tuning_, slot).cycle);
+    if (const WaveTimeline *wave = find_timeline(workgroup, slot))
+      latest = std::max(latest, wave->cycle);
   for (const std::uint32_t slot : slots)
-    wait_until(timeline_for(waves_, tuning_, slot), latest);
+    if (WaveTimeline *wave = find_timeline(workgroup, slot))
+      wait_until(*wave, latest);
 }
 
-void ComputeUnitDes::wave_end(std::uint32_t slot) {
-  WaveTimeline &wave = timeline_for(waves_, tuning_, slot);
-  if (!wave.live)
+void ComputeUnitDes::wave_end(std::uint32_t workgroup, std::uint32_t slot) {
+  const std::uint64_t key = (static_cast<std::uint64_t>(workgroup) << 32) | slot;
+  const auto found = live_.find(key);
+  if (found == live_.end())
     return;
+  const std::uint32_t pooled = found->second;
+  WaveTimeline &wave = waves_[pooled];
 
   // A wavefront is not finished when its last instruction issues: anything
   // still in flight has to land before it retires, and the terminal instruction
@@ -890,7 +909,7 @@ void ComputeUnitDes::wave_end(std::uint32_t slot) {
     for (const std::uint64_t completion : queue)
       end = std::max(end, completion);
 
-  WaveTimeline &totals = retired_totals(waves_);
+  WaveTimeline &totals = totals_;
   for (std::size_t unit = 0; unit < kNumFunctionalUnits; ++unit)
     totals.unit_cycles[unit] += wave.unit_cycles[unit];
   for (std::size_t cls = 0; cls < kNumInstClasses; ++cls)
@@ -917,11 +936,38 @@ void ComputeUnitDes::wave_end(std::uint32_t slot) {
   ++occupancy_.waves;
 
   wave.reset();
+  live_.erase(found);
+  free_.push_back(pooled);
 }
 
 void ComputeUnitDes::reset_occupancy() {
   occupancy_ = Occupancy{};
-  retired_totals(waves_).reset();
+  totals_.reset();
+  if (recorder_)
+    recorder_->clear();
+}
+
+void ComputeUnitDes::run_schedule(std::uint64_t resident_waves, const DispatchMemory *memory) {
+  if (!recorder_ || recorder_->empty())
+    return;
+  const ScheduleResult result = recorder_->run(resident_waves, memory);
+  occupancy_.scheduled_cycles = static_cast<std::uint64_t>(std::ceil(result.end));
+  occupancy_.scheduled_wave_cycles = static_cast<std::uint64_t>(std::ceil(result.wave_cycles));
+  occupancy_.scheduled_end = result.end;
+  occupancy_.scheduled_waves = result.waves;
+  occupancy_.spin_arrival = result.spin_arrival;
+  occupancy_.scheduled_saturated = result.memory_saturation_scale >= 0.0;
+  if (plane_.istream_wants(index_)) {
+    // Diagnostic: the unit's scheduled duration, for comparison with the
+    // offline replay of the same records. Precedes the dispatch-end record.
+    IStreamRecord record;
+    record.type = 8;
+    record.cu = index_;
+    record.a = static_cast<std::uint32_t>(std::min<std::uint64_t>(occupancy_.scheduled_cycles, 0xFFFFFFFFu));
+    record.b = static_cast<std::uint32_t>(result.waves);
+    record.pc = static_cast<std::uint64_t>(result.wave_cycles);
+    plane_.istream_write(record);
+  }
 }
 
 } // namespace rocjitsu::timing
