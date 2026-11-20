@@ -9,10 +9,11 @@ cycle by cycle, and every rule is a measured hardware fact rather than a fitted 
 | --- | --- |
 | **What** | Replace the fitted closed-form composition of [timing.md](timing.md) with a per-SIMD scheduler plus measured kernel-level terms (launch, XCD stagger, teardown, write-back). |
 | **Status** | **Prototype.** Runs as an offline replay over instruction streams exported by the emulator. A C++ port is in progress on a separate branch behind `scheduler.enabled` (default off), not merged. The shipped composition is unchanged. |
-| **Headline (development data)** | 85 single-kernel items, median \|pred/meas − 1\| / share within 25%. **Queued reference (primary): 8.8% / 93%**, median ratio 0.94. Idle-gap reference: 7.9% / 94%. Nothing is fitted except one power limit ([§4.7](#47-occupancy-workgroup-launch-clock)). The shipped composition scores 13.9% / 69% *in-sample* (knobs fitted on this data, old mixed reference). |
-| **Not yet** | No held-out score. Held-out set 9 will be scored against the queued reference ([§5.3](#53-the-reference-regime)). |
+| **Headline: held-out set 9, scored once** | 95 library calls on new shapes; model frozen and scoring pre-registered before the run ([§9.3](#93-held-out-set-9)). **Queued reference (primary): median \|pred/meas − 1\| 7.8%, 91% within 25%**, median ratio 0.96. Idle-gap reference: 7.3%, 94%, 0.96. |
+| **Development data (in-sample)** | 85 single-kernel items: queued 7.8% / 94%, idle gap 6.1% / 95% ([§9.1](#91-development-data)). In the same metric, held-out is about one point worse than development (8.5% vs 7.8% queued). Nothing is fitted except one power limit, which an independent measurement confirms ([§4.7](#47-occupancy-workgroup-launch-clock)). The shipped fitted composition scores 19.6% / 56.5% on the same 85 items, also in-sample (its knobs were fitted on this data). |
+| **Ranking** | On 5 tuning problems × 76 configs, the true best config is always in the model's top 3 ([§9.4](#94-ranking-test)). |
 
-<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="images/timing-measured-scheduler/overview-dark.svg"><img alt="How the timing model works: the emulator runs the GPU program, exports an instruction stream per sampled CU, a per-SIMD scheduler with measured rules times it, kernel-level terms (slowest CU, launch, XCD stagger, teardown tail, write-back) give the predicted kernel time. Rules come from microbenchmarks and thread traces on MI355X; predictions are validated against measured kernel time (85 development kernels: 8.8% median error queued, 7.9% idle-gap, vs 13.9% for the fitted model)." src="images/timing-measured-scheduler/overview.svg" width="100%"></picture></p>
+<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="images/timing-measured-scheduler/overview-dark.svg"><img alt="How the timing model works: the emulator runs the GPU program, exports an instruction stream per sampled CU, a per-SIMD scheduler with measured rules times it, kernel-level terms (slowest CU, launch, XCD stagger, teardown tail, write-back) give the predicted kernel time. Rules come from microbenchmarks and thread traces on MI355X; predictions are validated against measured kernel time (held-out set 9, 95 calls scored once: 7.8% median error queued, 91% within 25%; the fitted model scores 19.6% in-sample on the development kernels)." src="images/timing-measured-scheduler/overview.svg" width="100%"></picture></p>
 
 ## Contents
 
@@ -24,7 +25,7 @@ cycle by cycle, and every rule is a measured hardware fact rather than a fitted 
 6. [Memory and replay corrections](#6-memory-and-replay-corrections)
 7. [Implementation](#7-implementation)
 8. [How rules are obtained and validated](#8-how-rules-are-obtained-and-validated)
-9. [Results (development data)](#9-results-development-data)
+9. [Results](#9-results)
 10. [Open items and plan](#10-open-items-and-plan)
 
 ---
@@ -76,7 +77,7 @@ rather than from end-to-end kernel time.
 | Resource | Scope | Occupancy |
 | --- | --- | --- |
 | Instruction arbiter | per SIMD | Each cycle each pipe accepts one instruction; highest `s_setprio` wins, then the oldest. |
-| VALU pipe | per SIMD | 2, 4 or 8 cycles per mnemonic; transcendentals share this pipe. |
+| VALU pipe | per SIMD | 2, 4 or 8 cycles per mnemonic; transcendentals share this pipe. Two 2-cycle ops of different waves can share one 4-cycle VALU slot ([§4.8](#48-rules-added-for-the-frozen-model)). |
 | MFMA pipe | per SIMD | Number of passes of the shape; each MFMA also holds the VALU pipe at issue. |
 | SALU | per SIMD | 4 cycles |
 | `v_cndmask_b32` (VOP2 form) | per CU | ≈4.4 cycles per instruction |
@@ -86,15 +87,16 @@ rather than from end-to-end kernel time.
 
 Per wavefront the scheduler tracks:
 
-- in-order issue, at most one instruction per **issue interval** (4 cycles; 4.6 for 8-byte encodings);
+- in-order issue, at most one instruction per **issue interval** (4 cycles; 4.6 for a run of 8-byte
+  encodings; 4.8 / 8.2 for 8- / 16-byte LDS reads);
 - a register **scoreboard** (VGPR / SGPR / AGPR): an instruction issues when its sources are ready;
 - **wait counters**: `s_waitcnt` issues, then holds the wavefront until the named counters drain;
 - **wave-local holds** for instructions that occupy the wavefront itself (branches, LDS writes,
   vector-memory issue, `s_nop`);
 - workgroup **barriers**, released 4 cycles after the last live member arrives.
 
-**Placement.** Wavefronts of a workgroup go to SIMDs round-robin; a workgroup launches when enough
-wave slots are free. Workgroup *i* runs on XCD *i* mod 8; within an XCD, workgroups go round-robin
+**Placement.** Each SIMD has a quarter of the CU's wave slots. A workgroup's wavefronts are spread
+evenly over the SIMDs, and the workgroup launches when those SIMDs have room. Workgroup *i* runs on XCD *i* mod 8; within an XCD, workgroups go round-robin
 over shader engines and then CUs, so *i* and *i* + 256 share a CU.
 
 ### 3.2 One scheduling step
@@ -167,6 +169,12 @@ From a 49-pattern microbenchmark; the emulator's LDS rule matches 105 of 110 mea
 Wave hold: writes ≈ bytes/40 (*trace*: 1 KiB writes cost 25–31 cycles in three kernels), b32 ≈ 8;
 `b128` reads ≈ 8. Latency ≈ 52–60 cycles.
 
+| Other LDS traffic | Cost |
+| --- | --- |
+| `ds_bpermute_b32` / `ds_permute_b32` | 6 cycles of the CU's LDS; holds the wave 8.3 cycles |
+| LDS-DMA load (`buffer_load … lds`, no VGPR destination) | 1 cycle of the CU's LDS, on top of its vector-memory cost |
+| Issue interval of back-to-back reads | 4.8 cycles for 8-byte (`ds_read_b64*`), 8.2 for `ds_read_b128` |
+
 ### 4.5 Vector memory
 
 | Rule | Value |
@@ -209,12 +217,43 @@ set = table[v],  table = 0,2,1,0,3,1,2,0, 1,3,0,1,2,0,3,1, 2,0,3,0,1,3,0,2, 3,1,
 | Sustained clock | 2383–2400 MHz on 91 of 95 development kernels; three dense fp8 GEMMs (1922–2260 MHz) and one bf16 matmul (2142 MHz) throttle. |
 | Power-limited clock | f = 2400 MHz · √(*C* / *D*) when *D* > *C*, where *D* is the XCD dynamic power from measured per-operation energies: fp8 32×32×64 MFMA 27.6 nJ, bf16 32×32×16 MFMA 16.3 nJ, LDS 6.4 pJ/B, L2 19 pJ/B, HBM ≈25 pJ/B (at the XCD). |
 
-**The power limit *C* is the one fitted value.** Sustained synthetic loads give *C* ≈ 525–550 W, but
-real short kernels throttle only at *C* ≈ 760 W. That value is derived from the four throttled
-development kernels (in-sample; leave-one-out error ≈50 MHz) and separates exactly those 4 of 95. An
-independent basis for *C* is open ([§10](#10-open-items-and-plan)).
+**The power limit *C* is the one fitted value.** *C* = 760 W is derived from the four throttled
+development kernels (in-sample; leave-one-out error ≈50 MHz) and separates exactly those 4 of 95.
+**An independent measurement agrees:** synthetic gap-free MFMA loads of 20–500 µs per kernel,
+run until they throttle and scored with the same energy table, give *C* ≈ 761 W (median of 10).
+The limit binds when the measured XCD power reaches ≈830–865 W.
 
-### 4.8 What changes against the shipped tuning
+Caveat: the energy table is not exact. Clean LDS and L2 loads measure ≈3.7 pJ/B for LDS and ≈14.3 pJ/B
+for L2 hits, against 6.4 and 19 in the table, and about 20% of real-kernel power is not explained by
+the table's operations. *C* and the table are consistent with each other, so the predicted clocks hold;
+the individual energies should not be read as physical.
+
+### 4.8 Rules added for the frozen model
+
+The model scored on held-out set 9 adds the following measured rules to those above. The inclusion
+rule was fixed before scoring: **every rule backed by a measurement is in, every unmeasured assumption is
+out**, regardless of its development score. Two rules that worsen the development score (8-byte
+encoding mix, miss merge) therefore stay in; an assumption that beyond-L2 bandwidth scales with the
+clock was left out because it is not measured.
+
+| Rule | Value | Source |
+| --- | --- | --- |
+| LDS permute | `ds_bpermute` / `ds_permute`: 6 CU-LDS cycles, wave hold 8.3 ([§4.4](#44-lds)) | microbenchmark |
+| LDS-DMA | `buffer_load … lds`: 1 CU-LDS cycle ([§4.4](#44-lds)) | microbenchmark |
+| LDS read issue interval | 4.8 cycles (8-byte), 8.2 (`b128`) | microbenchmark |
+| VALU co-issue pairing | A 2-cycle VALU op leaves its SIMD's 4-cycle VALU slot open only for another 2-cycle op of another wave; any other VALU op or MFMA waits for the slot to end. Eligibility is by pipe occupancy, not encoding. | microbenchmark, thread trace |
+| In-flight miss merge | A read that hits L1 at an instruction where a sibling wave of the same workgroup missed (same occurrence) waits for the siblings' miss, taking their mean miss latency. | thread trace |
+| Even SIMD spread | Each SIMD has a quarter of the CU's wave slots; a workgroup's waves are spread evenly over the SIMDs, and it launches only when those SIMDs have room ([§3.1](#31-machine)). | thread trace |
+| `v_cndmask_b32` saturation | When the CU-shared VOP2 `v_cndmask_b32` resource is contended across SIMDs, ordinary VALU on the other SIMDs issues at ≥16 cycles per instruction for 8.8 cycles ([§4.1](#41-issue-and-valu)). | microbenchmark |
+| 8-byte encoding mix | 4.6-cycle interval only when fewer than half of the wave's last 8 instructions are 4-byte; otherwise 4.0 ([§4.1](#41-issue-and-valu)). | microbenchmark |
+| Conversion occupancies | fp8/bf8 conversions from f32 (packed, stochastic rounding, scaled) and `v_permlane16/32_swap`: 8 cycles; conversions to f32/bf16/f16 from fp8/bf8 and `v_cvt_pk_bf16_f32`: 4 ([§4.1](#41-issue-and-valu)) | microbenchmark |
+| f64 MFMA | 16×16×4: 64 cycles, 4×4×4: 16; VALU hold occupancy + 8 ([§4.2](#42-mfma)) | microbenchmark |
+
+The pairing and encoding rules compose without double counting: the encoding rule sets only the wave's
+own issue interval, the pairing rule only the SIMD's VALU slot. The leave-one-out effect of each rule
+on the development data is in [§9.1](#91-development-data).
+
+### 4.9 What changes against the shipped tuning
 
 | Quantity | Shipped | Measured |
 | --- | --- | --- |
@@ -278,15 +317,16 @@ reasons:
   3.8–4.0 µs after 8–80 µs gaps but 4.5 µs after ≥160 µs.
 - **Closer to production**, where kernels run from a stream or graph.
 
-It was not chosen by model score: the model scores better on the idle-gap reference ([§9](#9-results-development-data)).
+It was not chosen by model score: the model scores better on the idle-gap reference ([§9.1](#91-development-data)).
 The idle-gap result is reported alongside; the two references differ by ≈0.96 µs per kernel, the XCD
-stagger. Held-out set 9 will be scored queued.
+stagger. Held-out set 9 was scored queued ([§9.3](#93-held-out-set-9)).
 
 ### 5.4 Multi-kernel library calls
 
 hipBLASLt split-K calls launch a GEMM followed by a PostGSU reduction. They are predicted as the sum of
 both kernels, the second one queued ([§5.2](#52-queued-behind-another-kernel)). All 10 such calls in
-the development data are within 16%.
+the development data are within 16%; on held-out set 9, the 9 multi-kernel calls have a median error
+of 6.8% queued ([§9.3](#93-held-out-set-9)).
 
 ## 6. Memory and replay corrections
 
@@ -365,8 +405,10 @@ the stall cause of every non-issue cycle ([§3.2](#32-one-scheduling-step)).
 The rule tables become tuning data in the config, each entry citing its measurement; the shipped
 composition stays selectable.
 
-Port status: separate branch, behind `scheduler.enabled` (default off), 48 scheduler tests, not merged.
-On 4 items it matches the Python replay within 1 cycle per CU.
+Port status: separate branch, behind `scheduler.enabled` (default off), not merged. On 6 items it
+matches the Python replay within 1 cycle per CU. It implements the development model before the rules of
+[§4.8](#48-rules-added-for-the-frozen-model), plus the power-limited clock; with the scheduler off, the
+shipped composition's results are unchanged.
 
 | Part | Status |
 | --- | --- |
@@ -377,10 +419,12 @@ On 4 items it matches the Python replay within 1 cycle per CU.
 | Per-pc averaged memory, two-pass memory queue | ported |
 | Beyond-L2 rescaling, demand bandwidth share | ported |
 | Occupancy limit, saturated device | ported |
-| Slowest-line load completion | to port |
-| Slot release at store completion, 180-cycle relaunch | to port |
-| Outstanding-request cap (≈118 per CU) | to port |
-| Power-limited clock | to port |
+| Slowest-line load completion | ported |
+| Slot release at store completion, 180-cycle relaunch | ported |
+| Outstanding-request cap (≈118 per CU), L2 read bandwidth | ported |
+| Power-limited clock | ported |
+| Rules of [§4.8](#48-rules-added-for-the-frozen-model) | to port |
+| Queued kernel rule ([§5.2](#52-queued-behind-another-kernel)) | to port |
 
 ## 8. How rules are obtained and validated
 
@@ -395,9 +439,10 @@ On 4 items it matches the Python replay within 1 cycle per CU.
 
 **Nothing in [§4](#4-measured-rules-mi355x) or [§5](#5-kernel-time) is fitted to end-to-end kernel time**,
 except the power limit *C* ([§4.7](#47-occupancy-workgroup-launch-clock)), which is set from the
-measured clocks of the four throttled development kernels.
+measured clocks of the four throttled development kernels and agrees with an independent synthetic
+measurement.
 
-Validation, on development data only:
+Validation:
 
 - **Mechanism level:** replay vs warm hardware thread traces, aligned by program order; each mnemonic's
   issue-to-next-issue gap is compared, which shows which rule is wrong.
@@ -405,32 +450,47 @@ Validation, on development data only:
   caches, in the two launch regimes of [§5.3](#53-the-reference-regime): queued (primary) and after an
   idle gap.
 
-The scheduler then goes through the existing protocol of
+The scheduler then went through the existing protocol of
 [timing-variant-ranking.md](timing-variant-ranking.md): development → pre-registration → one scoring of
-a new held-out set.
+a new held-out set ([§9.3](#93-held-out-set-9)).
 
-## 9. Results (development data)
+## 9. Results
 
-> Development data only, no held-out score. 85 single-kernel items; error = median |predicted /
-> measured − 1|, plus the share within 25%. Nothing is fitted except the power limit *C*
-> ([§4.7](#47-occupancy-workgroup-launch-clock)). The shipped composition's numbers are in-sample (its
-> knobs were fitted on this data) and are against the old mixed-regime `kernel_us`.
+Two metrics appear below; compare like with like.
 
-| Reference ([§5.3](#53-the-reference-regime)) | Kernel rule | Median error | Within 25% | Median ratio |
+- **Development tables** use exp(median |ln *r*|) − 1, with *r* = predicted / measured: a median error
+  that treats over- and under-prediction symmetrically.
+- **Held-out set 9** was pre-registered with median |*r* − 1| as the headline. Its tables also give the
+  development-table metric.
+- In both, "within 25%" means 0.8 ≤ *r* ≤ 1.25.
+
+### 9.1 Development data
+
+> 85 single-kernel development items, in-sample. Nothing is fitted except the power limit *C*
+> ([§4.7](#47-occupancy-workgroup-launch-clock)). The rules were developed on these items, so these
+> numbers are optimistic; [§9.3](#93-held-out-set-9) is the honest score.
+
+| Model | Reference ([§5.3](#53-the-reference-regime)) | Median error | Within 25% | Median ratio |
 | --- | --- | --- | --- | --- |
-| **Queued (primary)** | queued ([§5.2](#52-queued-behind-another-kernel)) | **8.8%** | **93%** | 0.94 |
-| Idle gap | idle gap ([§5.1](#51-launched-after-an-idle-gap)) | 7.9% | 94% | 0.95–0.96 |
-| Shipped fitted composition | — (old mixed `kernel_us`, in-sample) | 13.9% | 69% | — |
+| **Frozen model** (with [§4.8](#48-rules-added-for-the-frozen-model)) | **queued (primary)** | **7.8%** | **94%** | 0.96 |
+| Frozen model | idle gap | 6.1% | 95% | 0.96 |
+| Before the rules of [§4.8](#48-rules-added-for-the-frozen-model) | queued | 9.3% | 93% | 0.94 |
+| Before the rules of [§4.8](#48-rules-added-for-the-frozen-model) | idle gap | 7.9% | 94% | 0.95 |
+| Shipped fitted composition (in-sample, knobs fitted on this data) | queued | 19.6% | 56.5% | — |
 
-Multi-kernel hipBLASLt calls (10, not in the 85) are all within 16% ([§5.4](#54-multi-kernel-library-calls)).
+Each model is scored with the kernel rule that matches the reference ([§5.1](#51-launched-after-an-idle-gap),
+[§5.2](#52-queued-behind-another-kernel)). Corrections to the previous version of this document:
 
-### 9.1 Rule by rule
+- It gave 8.8% / 93% for the queued result before [§4.8](#48-rules-added-for-the-frozen-model). That run
+  lacked the measured L2 read bandwidth rule of [§4.6](#46-caches-and-synchronisation); with it, 9.3% / 93%.
+- It gave 13.9% / 69% for the fitted composition. That came from an older emulator build and the old
+  mixed-regime reference; with the current build on the queued reference, 19.6% / 56.5%.
 
-Idle-gap reference unless noted; each step adds measured rules, nothing fitted except *C* in the last.
+**Rule by rule.** Idle-gap reference unless noted; each step adds measured rules, nothing fitted except
+*C*. The first six steps were scored against the old mixed-regime `kernel_us`.
 
 | Step | Median error | Within 25% |
 | --- | --- | --- |
-| Shipped fitted composition (in-sample, mixed `kernel_us`) | 13.9% | 69% |
 | Measured scheduler with the LDS rule *(mixed `kernel_us`)* | 11.4% | 74% |
 | + stream-K spin collapse *(mixed)* | 11.1% | 79% |
 | + beyond-L2 rescaling *(mixed)* | 9.9% | 80% |
@@ -441,52 +501,154 @@ Idle-gap reference unless noted; each step adds measured rules, nothing fitted e
 | + occupancy fix, saturated-device rule | 8.8% | 89% |
 | + slowest-line latency, slot release at store completion + 180-cycle relaunch, ≤118 outstanding L2 requests per CU | 8.1% | 91% |
 | + emulator LDS lane-group rule, vector-L1 set hash | 8.2% | 92% |
-| + power-limited clock | **7.9%** | **94%** |
-| Same model, queued reference and queued kernel rule | **8.8%** | **93%** |
+| + power-limited clock, L2 read bandwidth | 7.9% | 94% |
+| + rules of [§4.8](#48-rules-added-for-the-frozen-model) (frozen model) | **6.1%** | **95%** |
+| Same model, queued reference and queued kernel rule | **7.8%** | **94%** |
 
-<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="images/timing-measured-scheduler/error-progression-dark.svg"><img alt="Waterfall of median error as each measured rule is added: 11.4, 11.1, 9.9, 9.1, 9.0, 9.3 percent against the mixed reference; the reference then changes to regime-matched idle-gap measurements (8.6), and further rules give 8.8, 8.1, 8.2 and 7.9 percent; the queued reference gives 8.8 percent; the fitted model is 13.9 percent. Within 25 percent rises from 74 to 94 percent." src="images/timing-measured-scheduler/error-progression.svg" width="100%"></picture></p>
+<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="images/timing-measured-scheduler/error-progression-dark.svg"><img alt="Waterfall of median error on the development kernels as each measured rule is added: 11.4, 11.1, 9.9, 9.1, 9.0, 9.3 percent against the mixed reference; the reference then changes to regime-matched idle-gap measurements (8.6), and further rules give 8.8, 8.1, 8.2, 7.9 and, with the rules of the frozen model, 6.1 percent; the queued reference gives 7.8 percent; the fitted model scores 19.6 percent on the queued reference. Within 25 percent rises from 74 to 95 percent." src="images/timing-measured-scheduler/error-progression.svg" width="100%"></picture></p>
+
+**Leave one out.** Each rule of [§4.8](#48-rules-added-for-the-frozen-model) removed in turn from the
+frozen model (development data, median error):
+
+| Without | Queued | Idle gap |
+| --- | --- | --- |
+| — (frozen model) | 7.83% | 6.08% |
+| LDS permute | 7.83% | 6.08% |
+| LDS-DMA | 7.77% | 6.08% |
+| 8-byte LDS read interval | 7.77% | 6.43% |
+| `b128` LDS read interval | 7.79% | 6.08% |
+| VALU co-issue pairing | 8.20% | 6.85% |
+| In-flight miss merge | **7.31%** | 6.08% |
+| Even SIMD spread | 8.20% | 6.49% |
+| `v_cndmask_b32` saturation | 8.20% | 6.79% |
+| 8-byte encoding mix | **6.88%** | **5.78%** |
+| Conversion occupancies | 7.83% | 6.08% |
+| f64 MFMA | 7.83% | 6.08% |
+
+Pairing, SIMD spread and `v_cndmask_b32` saturation help most. The 8-byte encoding mix and the miss merge
+make the development score worse (bold), but they are measured, so by the inclusion rule they stay in.
+Some rules change no development item; they matter for kernels that use those instructions.
 
 ### 9.2 By family
 
-<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="images/timing-measured-scheduler/family-error-dark.svg"><img alt="Median error by family for the fitted model, the scheduler on the queued reference and the scheduler on the idle-gap reference; the scheduler is better than the fitted model on 8 of 9 families queued (LayerNorm is 0.4 points worse) and on all 9 idle-gap." src="images/timing-measured-scheduler/family-error.svg" width="90%"></picture></p>
+<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="images/timing-measured-scheduler/family-error-dark.svg"><img alt="Median error by family, queued reference, development-table metric: the fitted model on development data (in-sample), the frozen scheduler on development data, and the frozen scheduler on held-out set 9. The scheduler is better than the fitted model on every family; held-out is worse than development on attention, hipBLASLt GEMM and RMSNorm and better on LayerNorm, swiglu and Triton matmul; overall 8.5 percent held-out, 7.8 percent development, 19.6 percent fitted." src="images/timing-measured-scheduler/family-error.svg" width="90%"></picture></p>
 
-| Family | n | Shipped (fitted, in-sample) | Scheduler, queued (primary) | Scheduler, idle gap |
+Development data, median error (development-table metric):
+
+| Family | n | Shipped (fitted, in-sample), queued | Frozen model, queued (primary) | Frozen model, idle gap |
 | --- | --- | --- | --- | --- |
-| RMSNorm | 6 | 10.3% | **3.8%** | 2.7% |
-| attention | 10 | 14.9% | **5.2%** | 3.9% |
-| Triton softmax | 10 | 16.5% | **7.2%** | 6.5% |
-| fp8 matmul | 10 | 11.2% | **7.9%** | 10.7% |
-| hipBLASLt GEMM | 20 | 16.1% | **7.9%** | 8.5% |
-| Triton flash attention | 6 | 18.2% | **9.4%** | 8.1% |
-| Triton matmul | 15 | 18.0% | **12.4%** | 8.3% |
-| LayerNorm | 4 | 15.3% | **15.7%** | 12.0% |
-| swiglu | 4 | 23.6% | **16.0%** | 16.6% |
-| **all** | **85** | 13.9% (69%) | **8.8% (93%)** | 7.9% (94%) |
+| RMSNorm | 6 | 26.2% | **2.6%** | 2.7% |
+| Triton softmax | 10 | 24.4% | **3.1%** | 2.4% |
+| attention | 10 | 17.9% | **4.8%** | 3.7% |
+| hipBLASLt GEMM | 20 | 22.9% | **6.3%** | 8.1% |
+| Triton flash attention | 6 | 30.4% | **8.8%** | 6.4% |
+| swiglu | 4 | 34.1% | **9.8%** | 10.1% |
+| fp8 matmul | 10 | 14.1% | **11.4%** | 9.1% |
+| Triton matmul | 15 | 16.7% | **12.0%** | 9.1% |
+| LayerNorm | 4 | 24.3% | **16.6%** | 12.5% |
+| **all** | **85** | 19.6% (56.5%) | **7.8% (94%)** | 6.1% (95%) |
 
-Causal attention is sampled on every CU.
+Causal attention is sampled on every CU. Held-out per-family results are in [§9.3](#93-held-out-set-9).
 
-**Known remaining error.**
+### 9.3 Held-out set 9
 
-- swiglu ≈16%, predicted too fast.
-- LayerNorm 12–16% (n = 4).
-- Triton matmul on the queued reference, 12.4% (8.3% idle gap).
-- One fp8 kernel's LDS reads appear slower on hardware than modelled; to be measured.
+> Scored once, after the model was frozen (rule switches, module hashes, emulator build and configuration
+> recorded) and the scoring procedure was pre-registered. No held-out prediction was computed before
+> the scoring run.
+
+**Set.** 95 library calls on 40 new shapes, with the same families and counts as the development set,
+drawn with a fixed seed; no shape overlaps a development item or an earlier held-out set. 9 hipBLASLt
+calls launch two kernels (split-K), predicted as the sum of both, the second queued
+([§5.4](#54-multi-kernel-library-calls)). Reference: summed device time per call, queued (primary) and
+after an idle gap.
+
+| Reference | Median \|*r* − 1\| | Within 25% | Median ratio | Development-table metric |
+| --- | --- | --- | --- | --- |
+| **Queued (primary)** | **7.8%** | **91%** | 0.96 | 8.5% |
+| Idle gap | 7.3% | 94% | 0.96 | 7.8% |
+
+For comparison, the frozen model on the 95 development calls in the same per-call form gives 7.0% / 94%
+queued and 5.7% / 96% idle gap; in the development-table metric, 7.8% and 6.1% (85 items). **Held-out
+is about one point worse than development**, and the share within 25% drops from 94% to 91% queued.
+
+Per family:
+
+| Family | n | Queued: median \|*r* − 1\| | within 25% | ratio | dev-table metric | Idle gap: median \|*r* − 1\| | within 25% | ratio |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| LayerNorm | 4 | 2.2% | 100% | 1.01 | 2.2% | 0.6% | 100% | 1.00 |
+| swiglu | 4 | 4.9% | 100% | 0.97 | 5.1% | 7.7% | 100% | 0.98 |
+| Triton softmax | 10 | 5.2% | 100% | 0.97 | 5.3% | 3.4% | 100% | 0.99 |
+| Triton matmul | 15 | 7.5% | 100% | 0.93 | 8.1% | 6.2% | 100% | 0.94 |
+| RMSNorm | 6 | 8.0% | 100% | 0.97 | 8.7% | 7.4% | 100% | 0.98 |
+| Triton flash attention | 6 | 8.5% | 83% | 1.01 | 9.1% | 8.7% | 83% | 1.02 |
+| hipBLASLt GEMM | 30 | 10.3% | 83% | 0.92 | 11.5% | 9.0% | 90% | 0.96 |
+| fp8 matmul | 10 | 10.9% | 90% | 0.98 | 10.9% | 6.6% | 100% | 1.00 |
+| attention | 10 | 13.5% | 80% | 0.92 | 15.7% | 10.5% | 80% | 0.93 |
+| **all** | **95** | **7.8%** | **91%** | 0.96 | 8.5% | 7.3% | 94% | 0.96 |
+| multi-kernel calls (within hipBLASLt) | 9 | 6.8% | 89% | 0.93 | 7.3% | 7.3% | 100% | 1.00 |
+
+**Deviations from the development procedure**, stated in the pre-registration:
+
+1. **GEMM candidates.** The earlier rule (tune each shape, take the tuner's picks) could not be used on
+   the measurement node. Candidates are the default solution plus earlier same-dtype best or selected
+   solutions, fixed before measurement.
+2. **Power energies** are computed from each held-out export's replayed dispatch, as on the ranking set;
+   on development they came from a precomputed table. *C* = 760 W and the per-operation energies are
+   unchanged.
+3. **Throttled items.** Five held-out items ran throttled (1932–2204 MHz). The power rule predicts their
+   clock; they are neither corrected nor excluded.
+4. **Export build.** A later emulator build, verified timing-identical to the development-export build.
+5. **Export noise.** hipBLASLt exports vary by about 1–2% between runs.
+6. **Multi-kernel calls** are included (sum of kernels); development excluded them.
+7. **Reference** is per call; on development it was the main kernel. For single-kernel calls the two are
+   the same.
+
+**Where the error is.** Attention is the weakest family (13.5% queued, predicted ≈8% too fast). hipBLASLt
+GEMM has the widest spread: two calls are predicted 35–38% too fast. The weak development families
+(LayerNorm, swiglu) do well on held-out, with only 4 items each.
+
+### 9.4 Ranking test
+
+> Can the model pick the fastest config of a tuning problem? 5 problems (2 Triton matmul, 2 fp8 matmul,
+> 1 Triton flash attention), 76 configs, scored once on the queued reference with the model before
+> [§4.8](#48-rules-added-for-the-frozen-model).
+
+| Measure | Result |
+| --- | --- |
+| True best config in the model's top 3 | **5 of 5** |
+| Model's top 1 is the true best | 3 of 5 (the two misses are 14.0% and 1.9% slower than the best) |
+| Pairs of configs ordered correctly | 92%; 96% for pairs that differ by more than 10% |
+| Spearman rank correlation per problem | 0.89–0.98 |
+
+The frozen model, run on the same set afterwards (post hoc, so not a held-out result), gives the same
+top-1 and top-3 outcomes, Spearman 0.89–0.985 and a median error of 4.6–14.4% per problem.
+
+**Cost.** Predicting one config takes ≈33 s (emulation ≈30 s median + replay ≈3.4 s) with the model before
+[§4.8](#48-rules-added-for-the-frozen-model), and ≈40 s with the frozen model (replay ≈10.5 s median).
+Measuring it on hardware takes ≈3 s. The model is for configs or hardware that cannot be measured, not a
+faster way to tune.
 
 ## 10. Open items and plan
 
 | Item | Status |
 | --- | --- |
-| Independent basis for the power limit *C* | Open: 760 W is set from the four throttled development kernels; sustained synthetic loads give 525–550 W ([§4.7](#47-occupancy-workgroup-launch-clock)). |
-| swiglu, LayerNorm, Triton matmul (queued) | Open ([§9.2](#92-by-family)) |
-| LDS reads of the slow fp8 kernel | To measure |
+| Workgroup dispatcher | Measured: each XCD launches its workgroups in id order, cycling over shader engines per workgroup in every round; inside an engine a pointer gives the next CU with room, and a full engine stalls its XCD's queue. A small simulator of this rule reproduces 156 microbenchmark launches within 0.4% (median). The replay's even placement is off by up to 23.5% on multi-round grids with uneven workgroup durations. On development data the rule would improve LayerNorm (16.3% → 11.2% queued). Not in the frozen model. |
+| Relaunch delay | Measured from end of work to the next workgroup's first instruction: ≈530 + 40 × (waves per workgroup) cycles, including the end store. The split between store acknowledgement and launch is still to measure; the replay keeps 180 cycles after the acknowledgement. |
+| Write-back dirty-byte count | Hardware write-back is ≈0.12 µs per MB of dirty L2, saturating at ≈2.3 µs, in both regimes, so the rule of [§5.1](#51-launched-after-an-idle-gap) holds. The emulator's dirty-byte count differs from hardware for power-of-two workgroup output sizes: its L2 set index and workgroup→XCD mapping use only part of each XCD's sets, so the count caps at 4 / 8 / 16 MB. Proposed: dirty bytes = min(output store bytes, ≈18 MB). |
+| Latency at low occupancy | In the ranking test, Triton matmul configs with 4–8 resident waves per CU are predicted 6–8% too fast (median), ≈0% at 16 or more; this caused one top-1 miss. Suspected: under-costed exposed per-iteration latency (load → LDS → barrier). Needs a thread trace. |
+| Flash-attention warp cost | Triton flash attention from 2 to 8 waves per workgroup (m32_n32) is ×2.19 slower on hardware but ×1.53 in the model; configs with 4–16 waves per CU are predicted 16–20% too fast, 2-wave configs within ±8%. Needs a thread trace. |
+| Attention, hipBLASLt GEMM on held-out | 13.5% and 10.3% queued ([§9.3](#93-held-out-set-9)) |
+| Energy table | Consistent with *C* but not exact per operation; ≈20% of real-kernel power unexplained ([§4.7](#47-occupancy-workgroup-launch-clock)) |
 | Bandwidth in the last round of a grid that only partly fills the CUs | Not modelled |
 | Instruction fetch beyond the branch rule | Not modelled |
-| C++ port | Slowest-line rule, slot release / relaunch delay, outstanding-request cap, power clock still to port ([§7.4](#74-c-port)) |
+| C++ port | Rules of [§4.8](#48-rules-added-for-the-frozen-model) and the queued kernel rule still to port ([§7.4](#74-c-port)) |
 
 Plan:
 
-1. Port the remaining rules to C++ ([§7.4](#74-c-port)) and check it reproduces the replay on all items.
-2. Pre-register, then score held-out set 9 once, against the queued reference.
+1. Port the remaining rules to C++ ([§7.4](#74-c-port)) and check that it reproduces the replay on all
+   items.
+2. Add the measured round-2 rules (dispatcher, relaunch delay, dirty-byte count) under the same inclusion
+   rule, on development data only, then score them once on a new held-out set.
 
 The figures and diagrams (light and dark variants) are regenerated by
 `images/timing-measured-scheduler/make_figures.py` from the summary numbers quoted in this document.
