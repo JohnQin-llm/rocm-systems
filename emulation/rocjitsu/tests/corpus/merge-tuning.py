@@ -45,7 +45,9 @@ def main(argv: list[str] | None = None) -> int:
     machine = config.setdefault("timing", {}).setdefault("machine", {})
     unknown = []
     for key, value in overlay.items():
-        if not isinstance(value, (int, float)) or isinstance(value, bool):
+        # Numbers, switches (`l2.keep_across_dispatches`) and named choices
+        # (`l1_vector.set_hash`) are all scalar values the plane reads.
+        if not isinstance(value, (int, float, str)):
             unknown.append(key)
             continue
         machine[key] = value

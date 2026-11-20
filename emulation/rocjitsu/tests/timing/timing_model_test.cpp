@@ -29,6 +29,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <string>
 #include <vector>
 
@@ -338,6 +339,148 @@ TEST(TimingCache, AColdLineIsTheNextToGo) {
   EXPECT_TRUE(tags.access(0x000, 4));
 }
 
+// -- MI355X vector L1 set index ------------------------------------------------
+
+/// @brief The set each 128-byte line of a 128 KiB region was measured in on
+///        MI355X (bench/ubench/l1g_sets.json; sets A, B, C, rest as 0..3).
+constexpr const char *kMeasuredMi355xL1Sets =
+    "0210312020301302312102131301203120301302021031201301203131210210"
+    "3121021313012031021031202030130213012031312102132030130202103120"
+    "2030130202103120130120313121021302103120203013023121021313012030"
+    "1301203131210213203013020210312031210213130120310210312020301302"
+    "1301203131210213203013020210312031210213130120310210312020301301"
+    "2030130202103120130120313121021302103120203013023121021313012031"
+    "3121021313012031021031202030130213012031312102132030130202103121"
+    "0210312020301302312102131301203120301302021031201301203131210213"
+    "2030130202103120130120313121021302103120203013023121021313012030"
+    "1301203131210213203013020210312031210213130120310210312020301302"
+    "0210312020301302312102131301203120301302021031201301203131210210"
+    "3121021313012031021031202030130213012031312102132030130202103120"
+    "3121021313012031021031202030130213012031312102132030130202103121"
+    "0210312020301302312102131301203120301302021031201301203131210213"
+    "1301203131210213203013020210312031210213130120310210312020301301"
+    "2030130202103120130120313121021302103120203013023121021313012030";
+
+TagArray mi355x_l1() {
+  TagArray tags;
+  tags.configure(4, 64, 128, SetHash::Mi355x);
+  return tags;
+}
+
+/// @brief Lines that miss in one steady-state pass over @p lines consecutive
+///        128-byte lines, after two warming passes.
+std::uint64_t steady_misses(TagArray &tags, std::uint64_t base, std::uint64_t lines,
+                            std::uint64_t stride = 128) {
+  std::uint64_t stamp = 1;
+  for (int pass = 0; pass < 2; ++pass)
+    for (std::uint64_t line = 0; line < lines; ++line)
+      tags.access(base + line * stride, stamp++);
+  std::uint64_t misses = 0;
+  for (std::uint64_t line = 0; line < lines; ++line)
+    misses += tags.access(base + line * stride, stamp++) ? 0 : 1;
+  return misses;
+}
+
+TEST(TimingCacheMi355x, SetIndexReproducesTheMeasuredTable) {
+  const TagArray tags = mi355x_l1();
+  for (std::uint64_t line = 0; line < 1024; ++line)
+    EXPECT_EQ(tags.set_of(line * 128), static_cast<std::uint64_t>(kMeasuredMi355xL1Sets[line] - '0'))
+        << "line " << line;
+}
+
+TEST(TimingCacheMi355x, SetIndexSpotChecks) {
+  const TagArray tags = mi355x_l1();
+  EXPECT_EQ(tags.set_of(0x00000), 0u);
+  EXPECT_EQ(tags.set_of(0x0007f), 0u) << "the byte offset in the line does not matter";
+  EXPECT_EQ(tags.set_of(0x00080), 2u) << "byte address bit 7 is in the hash";
+  EXPECT_EQ(tags.set_of(0x00100), 1u);
+  EXPECT_EQ(tags.set_of(0x00200), 3u);
+  EXPECT_EQ(tags.set_of(0x01f80), 0u) << "line 63: one of the nine exceptions to the fold";
+  EXPECT_EQ(tags.set_of(0x05f80), 0u) << "line 191: another";
+  EXPECT_EQ(tags.set_of(0x03f80), 0u) << "line 127 follows the fold";
+}
+
+TEST(TimingCacheMi355x, ThePatternRepeatsSixteenMegabytesHigher) {
+  const TagArray tags = mi355x_l1();
+  for (std::uint64_t line = 0; line < 256; ++line)
+    EXPECT_EQ(tags.set_of((16ULL << 20) + line * 128), tags.set_of(line * 128)) << "line " << line;
+}
+
+TEST(TimingCacheMi355x, HighAddressBitsEnterAsMeasured) {
+  // bench/ubench/l1g_run8.jsonl: line bit 10 moves v by 01000, bit 11 by 11000,
+  // bit 12 by 10000, bit 13 by 01000, bits 14 to 18 not at all; combinations
+  // of bits add as XOR.
+  const TagArray tags = mi355x_l1();
+  EXPECT_EQ(tags.set_of(128ULL << 10), 1u);
+  EXPECT_EQ(tags.set_of(128ULL << 11), 3u);
+  EXPECT_EQ(tags.set_of(128ULL << 12), 2u);
+  EXPECT_EQ(tags.set_of(128ULL << 13), 1u);
+  EXPECT_EQ(tags.set_of((128ULL << 10) | (128ULL << 11)), 2u) << "01000 ^ 11000 = 10000";
+  for (std::uint64_t line = 0; line < 1024; ++line)
+    for (unsigned high = 14; high <= 30; ++high)
+      ASSERT_EQ(tags.set_of((line | (1ULL << high)) * 128), tags.set_of(line * 128))
+          << "line " << line << " bit " << high;
+}
+
+TEST(TimingCacheMi355x, ThirtyTwoConsecutiveLinesFillTheSetsNineNineSevenSeven) {
+  const TagArray tags = mi355x_l1();
+  std::array<int, 4> count{};
+  for (std::uint64_t line = 0; line < 32; ++line)
+    ++count[tags.set_of(line * 128)];
+  std::sort(count.begin(), count.end());
+  EXPECT_EQ(count, (std::array<int, 4>{7, 7, 9, 9}));
+}
+
+TEST(TimingCacheMi355x, AContiguousFootprintOverflowsTheFullestSetBeforeTheCapacity) {
+  // Hardware (bench/ubench/l1g_run2.jsonl, per-access traces of a pointer chase
+  // over consecutive lines): 224 lines leave 65 lines missing every pass, 240
+  // leave 136, 256 leave 145. 223 lines fit.
+  TagArray tags = mi355x_l1();
+  EXPECT_EQ(steady_misses(tags, 0, 223), 0u);
+  tags.invalidate();
+  EXPECT_EQ(steady_misses(tags, 0, 224), 65u) << "one set holds 65 lines and thrashes";
+  tags.invalidate();
+  EXPECT_EQ(steady_misses(tags, 0, 240), 136u) << "two sets thrash";
+  tags.invalidate();
+  EXPECT_EQ(steady_misses(tags, 0, 256), 145u);
+}
+
+TEST(TimingCacheMi355x, TheFoldIndexHoldsTheSameFootprintsEvenly) {
+  // What the default index does with the same footprint: every set gets 60 of
+  // 240 lines and nothing misses, which is not what the hardware does.
+  TagArray tags;
+  tags.configure(4, 64, 128);
+  EXPECT_EQ(steady_misses(tags, 0, 240), 0u);
+}
+
+TEST(TimingCacheMi355x, PowerOfTwoStridesSpreadOverAllFourSets) {
+  // Hardware: 256 lines at any power-of-two stride from 256 B to 64 KiB all hit.
+  for (std::uint64_t stride = 256; stride <= 65536; stride *= 2) {
+    TagArray tags = mi355x_l1();
+    EXPECT_EQ(steady_misses(tags, 0, 256, stride), 0u) << "stride " << stride;
+  }
+}
+
+TEST(TimingTuning, SetHashDefaultsToFoldAndReadsMi355x) {
+  EXPECT_EQ(Tuning::parse(tiny_config()).l1_vector.set_hash, SetHash::Fold);
+  const Tuning tuning = Tuning::parse(tiny_config(R"(,
+        "l1_vector.set_hash": "mi355x")"));
+  EXPECT_EQ(tuning.l1_vector.set_hash, SetHash::Mi355x);
+  EXPECT_EQ(tuning.l2.set_hash, SetHash::Fold);
+  EXPECT_TRUE(std::none_of(tuning.fell_back.begin(), tuning.fell_back.end(),
+                           [](const std::string &key) { return key.find("set_hash") != key.npos; }))
+      << "an absent set_hash is a default, not a guess";
+}
+
+TEST(TimingCacheMi355x, OtherGeometriesKeepTheFoldIndex) {
+  TagArray hashed;
+  hashed.configure(8, 4, 64, SetHash::Mi355x);
+  TagArray folded;
+  folded.configure(8, 4, 64);
+  for (std::uint64_t line = 0; line < 256; ++line)
+    EXPECT_EQ(hashed.set_of(line * 64), folded.set_of(line * 64));
+}
+
 // -- Composition -------------------------------------------------------------
 
 TEST(TimingDispatch, SameInputGivesTheSameAnswer) {
@@ -543,6 +686,62 @@ TEST(TimingLds, GranuleModelCostsWideAccessesByEightByteStride) {
   EXPECT_EQ(lds_granule_cycles(strided(512), 4, 64, 8, 32, 2.0), 64u);
   // Broadcast stays free.
   EXPECT_EQ(lds_granule_cycles(std::vector<std::uint64_t>(64, 0x40), 4, 64, 8, 32, 2.0), 2u);
+}
+
+// Expected values are MI355X measurements (bench/ubench gen_ubench9/10, tr_*): CU-wide cycles per
+// instruction with 4 waves on 4 SIMDs.
+std::uint64_t measured_lds(std::uint32_t bytes, bool load, const std::vector<std::uint64_t> &addrs) {
+  RetiredInstruction r;
+  r.lane_addresses = &addrs;
+  r.bytes_per_lane = bytes;
+  r.is_load = load;
+  r.space = MemorySpace::LocalDataShare;
+  return lds_measured_cycles(r, 64, 4);
+}
+
+std::vector<std::uint64_t> lanes(std::uint64_t (*f)(std::uint64_t)) {
+  std::vector<std::uint64_t> v(64);
+  for (std::uint64_t lane = 0; lane < 64; ++lane)
+    v[lane] = f(lane);
+  return v;
+}
+
+TEST(TimingLdsMeasured, FourByteReadsCountDistinctWordsPerBank) {
+  EXPECT_EQ(measured_lds(4, true, lanes([](std::uint64_t l) { return l * 4; })), 2u);
+  EXPECT_EQ(measured_lds(4, true, lanes([](std::uint64_t l) { return l * 8; })), 4u);
+  EXPECT_EQ(measured_lds(4, true, lanes([](std::uint64_t l) { return l * 128; })), 64u);
+  // broadcasts and shared words are free; distinct words in one bank are not
+  EXPECT_EQ(measured_lds(4, true, lanes([](std::uint64_t) { return std::uint64_t{0}; })), 2u);
+  EXPECT_EQ(measured_lds(4, true, lanes([](std::uint64_t l) { return (l >> 4) * 4; })), 2u);
+  EXPECT_EQ(measured_lds(4, true, lanes([](std::uint64_t l) { return (l & 1) * 512; })), 4u);
+  EXPECT_EQ(measured_lds(4, true, lanes([](std::uint64_t l) { return (l & 3) * 512; })), 8u);
+}
+
+TEST(TimingLdsMeasured, WideReadsSumOverLaneGroups) {
+  EXPECT_EQ(measured_lds(8, true, lanes([](std::uint64_t l) { return l * 8; })), 2u);
+  EXPECT_EQ(measured_lds(8, true, lanes([](std::uint64_t l) { return l * 16; })), 4u);
+  EXPECT_EQ(measured_lds(8, true, lanes([](std::uint64_t l) { return l * 128; })), 32u);
+  EXPECT_EQ(measured_lds(8, true, lanes([](std::uint64_t) { return std::uint64_t{0}; })), 2u);
+  EXPECT_EQ(measured_lds(16, true, lanes([](std::uint64_t l) { return l * 16; })), 4u);
+  EXPECT_EQ(measured_lds(16, true, lanes([](std::uint64_t l) { return l * 32; })), 8u);
+  EXPECT_EQ(measured_lds(16, true, lanes([](std::uint64_t l) { return l * 64; })), 16u);
+  EXPECT_EQ(measured_lds(16, true, lanes([](std::uint64_t) { return std::uint64_t{0}; })), 4u);
+}
+
+TEST(TimingLdsMeasured, TritonTransposeReadPatternCostsEight) {
+  // per-lane address of a Triton bf16 matmul's ds_read_b64_tr_b16 (mm320x2560x1280, v77)
+  const auto v77 = lanes([](std::uint64_t t) {
+    return ((t & 44) << 2) ^ (((t << 1) & 32) | ((t & 44) << 6) | ((t << 3) & 24));
+  });
+  EXPECT_EQ(measured_lds(8, true, v77), 8u);
+}
+
+TEST(TimingLdsMeasured, WritesKeepTheirWidthFloors) {
+  EXPECT_EQ(measured_lds(4, false, lanes([](std::uint64_t l) { return l * 4; })), 4u);
+  EXPECT_EQ(measured_lds(8, false, lanes([](std::uint64_t l) { return l * 8; })), 6u);
+  EXPECT_EQ(measured_lds(16, false, lanes([](std::uint64_t l) { return l * 16; })), 13u);
+  EXPECT_EQ(measured_lds(4, false, lanes([](std::uint64_t l) { return l * 16; })), 8u);
+  EXPECT_EQ(measured_lds(4, false, lanes([](std::uint64_t l) { return l * 128; })), 64u);
 }
 
 } // namespace

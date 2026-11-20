@@ -29,6 +29,17 @@
 
 namespace rocjitsu::timing {
 
+/// @brief How a cache level picks the set a line lives in.
+enum class SetHash : std::uint8_t {
+  /// @brief The line address XOR-folded onto the index bits (the default).
+  Fold,
+  /// @brief The measured MI355X vector L1 index: four sets of 128-byte lines,
+  ///        chosen by a non-linear table over a 5-bit XOR fold of the line
+  ///        address. Only defined for four 128-byte-line sets; any other
+  ///        geometry falls back to Fold.
+  Mi355x,
+};
+
 /// @brief Geometry and rates of one cache level.
 struct CacheTuning {
   std::uint64_t line_bytes = 4;
@@ -43,6 +54,13 @@ struct CacheTuning {
   bool write_back = false;
   /// @brief A store passes through without probing or allocating.
   bool write_through = false;
+  /// @brief The set index function, `<level>.set_hash`: "fold" or "mi355x".
+  ///
+  /// @details Optional; absent is "fold". The distinction matters for capacity:
+  /// MI355X's vector L1 index puts 9, 9, 7 and 7 of every 32 consecutive lines
+  /// into its four sets, so a contiguous footprint overflows the fullest set at
+  /// about 225 lines (28 KiB) rather than at the 256 lines the geometry holds.
+  SetHash set_hash = SetHash::Fold;
 };
 
 /// @brief Which matrix-core rate an opcode's inputs select.

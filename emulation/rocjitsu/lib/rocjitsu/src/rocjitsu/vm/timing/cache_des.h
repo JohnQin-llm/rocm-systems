@@ -23,7 +23,10 @@ public:
   /// @brief No line: what access() reports when its replacement wrote nothing back.
   static constexpr std::uint64_t kNoLine = ~0ULL;
 
-  void configure(std::uint64_t sets, std::uint64_t ways, std::uint64_t line_bytes);
+  void configure(std::uint64_t sets, std::uint64_t ways, std::uint64_t line_bytes,
+                 SetHash set_hash = SetHash::Fold);
+  /// @brief The set @p byte_address maps to.
+  std::uint64_t set_of(std::uint64_t byte_address) const;
   /// @brief Probe and allocate, replacing least recently used.
   /// @param write The access is a store: the line is dirty from now on.
   /// @param cold Allocate a missing line as least recently used rather than most,
@@ -47,6 +50,8 @@ private:
   std::uint64_t set_mask_ = 0;
   std::uint64_t line_bytes_ = 64;
   std::uint64_t line_shift_ = 6;
+  /// @brief Use the measured MI355X index (only when the geometry is its own).
+  bool mi355x_hash_ = false;
   std::vector<std::uint64_t> tags_;
   std::vector<std::uint64_t> stamps_;
   std::vector<std::uint8_t> dirty_;

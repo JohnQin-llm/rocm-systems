@@ -21,6 +21,7 @@
   "l1_scalar.lines_per_cycle": 1,
   "l1_vector.hit_cycles": 120,
   "l1_vector.lines_per_cycle": 0.5,
+  "l1_vector.set_hash": "mi355x",
   "l2.hit_cycles": 210,
   "l2.keep_across_dispatches": true,
   "l2.lines_per_cycle": 10,

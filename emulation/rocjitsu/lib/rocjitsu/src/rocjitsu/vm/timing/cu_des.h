@@ -229,4 +229,10 @@ private:
   Occupancy occupancy_;
 };
 
+/// @brief LDS cycles for one access under the rule measured on MI355X
+/// (Tuning::lds_measured_banks): bank multiplicity counted in distinct words, wide reads
+/// summed over lane groups (b64: 32-lane halves, b128: 16-lane quarters).
+std::uint64_t lds_measured_cycles(const RetiredInstruction &retired, std::uint64_t banks,
+                                  std::uint64_t bank_bytes);
+
 } // namespace rocjitsu::timing
