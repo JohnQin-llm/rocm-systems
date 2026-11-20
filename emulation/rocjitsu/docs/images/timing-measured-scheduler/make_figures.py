@@ -232,7 +232,7 @@ def overview(t):
     for b in nb[2:4]:
         arrow(ax, t, [(b["cx"], rules["b"]), (b["cx"], b["t"] - 1)], kind="side")
     val = node(ax, t, 1074 - 320, 350, 640, 58, "Validated against measured kernel time",
-               "85 development kernels: 8.8% median error (queued), 7.9% (idle-gap) vs 13.9% fitted",
+               "held-out set 9, 95 calls scored once: 7.8% median error (queued), 91% within 25%",
                kind="side")
     arrow(ax, t, [(nb[4]["cx"], nb[4]["b"]), (nb[4]["cx"], val["t"] - 1)], kind="side")
     return fig
@@ -402,33 +402,34 @@ def progression(t):
         ("+ occupancy,\nsaturation", 8.8, 89, "rule"),
         ("+ slowest\nline, slot\nrelease, cap", 8.1, 91, "rule"),
         ("+ LDS lanes,\nL1 hash", 8.2, 92, "rule"),
-        ("+ power\nclock", 7.9, 94, "rule"),
-        ("queued\nreference\n(primary)", 8.8, 93, "total"),
+        ("+ power\nclock, L2\nbandwidth", 7.9, 94, "rule"),
+        ("+ frozen-\nmodel rules\n(§4.8)", 6.1, 95, "rule"),
+        ("queued\nreference\n(primary)", 7.8, 94, "total"),
     ]
-    fitted = 13.9  # shipped fitted composition, in-sample (69 % within 25 %)
+    fitted = 19.6  # shipped fitted composition, queued reference, in-sample (56.5 % within 25 %)
     xs = list(range(len(steps) - 1)) + [len(steps) - 0.6]   # set the queued total apart
     fig, (ax,) = chart(
-        t, "Measured rules cut the median error to 8.8% queued (7.9% idle gap), vs 13.9% fitted",
-        "85 development kernels, measured rules added step by step; nothing fitted except the power limit "
-        "in the last step",
-        left=0.1, bottom=0.235, top=0.72, size=(11, 5.0), right=0.985,
+        t, "Measured rules cut the development error to 7.8% queued (6.1% idle gap), vs 19.6% fitted",
+        "85 development kernels (in-sample), measured rules added step by step; nothing fitted except the "
+        "power limit",
+        left=0.09, bottom=0.235, top=0.72, size=(12, 5.0), right=0.985,
         legend=[swatch(t["n_light"], "scheduler total"), swatch(t["blue"], "rule lowers error"),
                 swatch(t["orange"], "rule raises error"), swatch(t["n_dark"], "reference change"),
                 line_key(t, t["n_dark"], "fitted model (in-sample)", marker=False, dashed=True)])
     ax.set_xlim(-0.6, xs[-1] + 0.6)
-    ax.set_ylim(0, 17.5)
-    ax.set_yticks([0, 5, 10, 15])
-    ax.set_yticklabels(["0%", "5%", "10%", "15%"])
-    ax.set_ylabel("median |predicted / measured − 1|")
+    ax.set_ylim(0, 23)
+    ax.set_yticks([0, 5, 10, 15, 20])
+    ax.set_yticklabels(["0%", "5%", "10%", "15%", "20%"])
+    ax.set_ylabel("median error")
     ax.spines["left"].set_visible(False)
     grid(ax, t, "y")
     ax.axhline(fitted, color=t["n_dark"], lw=1.2, ls=(0, (4, 3)), zorder=2)
-    ax.text(xs[-1] + 0.55, fitted + 0.25, "fitted model: 13.9%", ha="right", va="bottom", fontsize=9,
-            color=t["ink2"])
+    ax.text(xs[-1] + 0.55, fitted + 0.25, "fitted model, queued, in-sample: 19.6%", ha="right", va="bottom",
+            fontsize=9, color=t["ink2"])
     # Reference change: mixed kernel_us before, regime-matched measurements after.
     ax.axvline(5.5, color=t["ink2"], lw=1, ls=(0, (3, 3)), zorder=2)
-    ax.text(5.42, 16.9, "vs mixed kernel_us", ha="right", va="top", fontsize=9, color=t["ink2"])
-    ax.text(5.58, 16.9, "vs regime-matched (idle gap)", ha="left", va="top", fontsize=9, color=t["ink2"])
+    ax.text(5.42, 22.6, "vs mixed kernel_us", ha="right", va="top", fontsize=9, color=t["ink2"])
+    ax.text(5.58, 22.6, "vs regime-matched (idle gap)", ha="left", va="top", fontsize=9, color=t["ink2"])
     bw = 40
     prev = None
     for i, (x, (_, err, _, kind)) in enumerate(zip(xs, steps)):
@@ -466,49 +467,49 @@ def dot_key(t, color, label):
 
 
 def families(t):
-    rows = [  # family, n, fitted (in-sample), scheduler queued (primary), scheduler idle gap
-        ("RMSNorm", 6, 10.3, 3.8, 2.7),
-        ("attention", 10, 14.9, 5.2, 3.9),
-        ("Triton softmax", 10, 16.5, 7.2, 6.5),
-        ("fp8 matmul", 10, 11.2, 7.9, 10.7),
-        ("hipBLASLt GEMM", 20, 16.1, 7.9, 8.5),
-        ("Triton flash attention", 6, 18.2, 9.4, 8.1),
-        ("Triton matmul", 15, 18.0, 12.4, 8.3),
-        ("LayerNorm", 4, 15.3, 15.7, 12.0),
-        ("swiglu", 4, 23.6, 16.0, 16.6),
+    rows = [  # family, n dev / held-out, fitted (dev, in-sample), frozen model dev, frozen model held-out 9
+        ("RMSNorm", "6 / 6", 26.2, 2.6, 8.7),
+        ("Triton softmax", "10 / 10", 24.4, 3.1, 5.3),
+        ("attention", "10 / 10", 17.9, 4.8, 15.7),
+        ("hipBLASLt GEMM", "20 / 30", 22.9, 6.3, 11.5),
+        ("Triton flash attention", "6 / 6", 30.4, 8.8, 9.1),
+        ("swiglu", "4 / 4", 34.1, 9.8, 5.1),
+        ("fp8 matmul", "10 / 10", 14.1, 11.4, 10.9),
+        ("Triton matmul", "15 / 15", 16.7, 12.0, 8.1),
+        ("LayerNorm", "4 / 4", 24.3, 16.6, 2.2),
     ]
-    rows = sorted(rows, key=lambda r: r[3])
-    total = ("all 85 kernels", None, 13.9, 8.8, 7.9)
+    rows = sorted(rows, key=lambda r: r[4])
+    total = ("all", "85 / 95", 19.6, 7.8, 8.5)
     fig, (ax,) = chart(
-        t, "The scheduler beats the fitted model on 8 of 9 families queued, all 9 idle-gap",
-        "Median |predicted / measured − 1| per family, 85 development kernels; left is better.\n"
-        "Fitted model: in-sample, against the old mixed-regime reference.",
-        left=0.25, bottom=0.1, top=0.7, legend_y=0.79, size=(8.5, 5.4),
-        legend=[dot_key(t, t["blue"], "scheduler, queued (primary)"),
-                dot_key(t, t["aqua"], "scheduler, idle gap"),
-                dot_key(t, t["orange"], "fitted model")])
+        t, "Overall, held-out error is close to development and well below the fitted model",
+        "Median error per family, queued reference, development-table metric; left is better.\n"
+        "Development numbers are in-sample (fitted model and scheduler); held-out set 9 was scored once.",
+        left=0.27, bottom=0.1, top=0.7, legend_y=0.79, size=(8.5, 5.4),
+        legend=[dot_key(t, t["blue"], "scheduler, held-out 9"),
+                dot_key(t, t["aqua"], "scheduler, development"),
+                dot_key(t, t["orange"], "fitted model, development")])
     ys = [len(rows) + 0.5 - i for i in range(len(rows))] + [0]   # top to bottom, total set apart
     allrows = rows + [total]
-    ax.set_xlim(0, 26)
+    ax.set_xlim(0, 36)
     ax.set_ylim(-0.6, ys[0] + 0.7)
-    ax.set_xticks([0, 5, 10, 15, 20, 25])
-    ax.set_xticklabels(["0%", "5%", "10%", "15%", "20%", "25%"])
+    ax.set_xticks([0, 10, 20, 30])
+    ax.set_xticklabels(["0%", "10%", "20%", "30%"])
     ax.spines["left"].set_visible(False)
     grid(ax, t, "x")
     ax.axhline(0.75, color=t["n_light"], lw=0.8, zorder=1)
-    for y, (fam, n, old, q, idle) in zip(ys, allrows):
-        lo, hi = min(old, q, idle), max(old, q, idle)
+    for y, (fam, n, old, dev, ho) in zip(ys, allrows):
+        lo, hi = min(old, dev, ho), max(old, dev, ho)
         ax.plot([lo, hi], [y, y], color=t["n_light"], lw=2, solid_capstyle="round", zorder=2)
-        for v, col, z in ((old, t["orange"], 3), (idle, t["aqua"], 4), (q, t["blue"], 5)):
+        for v, col, z in ((old, t["orange"], 3), (dev, t["aqua"], 4), (ho, t["blue"], 5)):
             ax.plot([v], [y], ls="none", marker="o", ms=MARK_PT + 1, mfc=col, mec=t["surface"], mew=RING_PT,
                     zorder=z, clip_on=False)
-        ax.text(q, y + 0.27, f"{q:.1f}", ha="center", va="bottom", fontsize=8.5, color=t["ink"], zorder=6,
-                fontweight="bold" if n is None else "normal")
+        ax.text(ho, y + 0.27, f"{ho:.1f}", ha="center", va="bottom", fontsize=8.5, color=t["ink"], zorder=6,
+                fontweight="bold" if fam == "all" else "normal")
     ax.set_yticks(ys)
-    ax.set_yticklabels([f"{f}  (n={n})" if n else f for f, n, *_ in allrows], fontsize=9.5, color=t["ink"])
+    ax.set_yticklabels([f"{f}  (n={n})" for f, n, *_ in allrows], fontsize=9.5, color=t["ink"])
     ax.get_yticklabels()[-1].set_fontweight("bold")
-    ax.text(0.0, -0.075, "Numbers: queued error.", transform=ax.transAxes, ha="left", va="top", fontsize=8.5,
-            color=t["ink2"])
+    ax.text(0.0, -0.075, "Numbers: held-out error. n: development / held-out (held-out hipBLASLt includes 9 "
+            "two-kernel calls).", transform=ax.transAxes, ha="left", va="top", fontsize=8.5, color=t["ink2"])
     return fig
 
 
