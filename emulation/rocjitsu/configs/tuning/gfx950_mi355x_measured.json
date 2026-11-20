@@ -1,5 +1,5 @@
 {
- "//": "MI355X (gfx950) machine parameters measured with tests/corpus/ubench (mb.hip) on one MI355X, 2026-11-18, ROCm 7.2.4, shader clock 2390 MHz under s_memtime. Cycles are shader cycles. Merge with tests/corpus/merge-tuning.py --tuning; see tests/corpus/ubench/README.md for where each value comes from. scheduler.* keys: measured per-SIMD issue scheduler, off unless scheduler.enabled is 1 (docs/timing-measured-scheduler.md section 7.4 lists the source of each).",
+ "//": "MI355X (gfx950) machine parameters measured with tests/corpus/ubench (mb.hip) on one MI355X, 2026-11-18, ROCm 7.2.4, shader clock 2390 MHz under s_memtime. Cycles are shader cycles. Merge with tests/corpus/merge-tuning.py --tuning; see tests/corpus/ubench/README.md for where each value comes from. scheduler.* keys: measured per-SIMD issue scheduler, on here (scheduler.enabled 1; 0 restores the composed terms) (docs/timing-measured-scheduler.md section 7.4 lists the source of each).",
  "machine": {
   "barrier.issue_cycles": 1,
   "branch.issue_cycles": 1,
@@ -68,7 +68,7 @@
   "vector_memory_read.issue_cycles": 1,
   "vector_memory_write.issue_cycles": 1,
   "wait_counter.issue_cycles": 1,
-  "scheduler.enabled": 0,
+  "scheduler.enabled": 1,
   "scheduler.simds_per_cu": 4,
   "scheduler.issue_interval_cycles": 4,
   "scheduler.long_encoding_interval_cycles": 4.6,

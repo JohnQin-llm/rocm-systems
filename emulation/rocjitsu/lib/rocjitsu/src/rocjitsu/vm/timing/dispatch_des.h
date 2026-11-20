@@ -287,6 +287,10 @@ public:
   std::uint64_t stall_cycles() const { return stall_cycles_; }
 
 private:
+  /// @brief Run the measured scheduler on every unit, concurrently (see
+  ///        ROCJITSU_TIMING_SCHEDULER_THREADS), and apply the results in unit order.
+  void schedule_units(const DispatchMemory *memory);
+
   const Tuning &tuning_;
   std::vector<ComputeUnitDes *> units_;
   DispatchShape shape_;

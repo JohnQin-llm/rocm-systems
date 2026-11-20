@@ -589,6 +589,12 @@ std::string scheduler_config(const std::string &extra) {
          "}}}";
 }
 
+TEST(MeasuredScheduler, TheHostThreadBudgetComesFromTheTopLevelConfig) {
+  EXPECT_EQ(Tuning::parse(scheduler_config("")).scheduler.host_thread_budget, 0u);
+  const std::string budgeted = R"({"cpu_thread_budget": 3, )" + scheduler_config("").substr(1);
+  EXPECT_EQ(Tuning::parse(budgeted).scheduler.host_thread_budget, 3u);
+}
+
 TEST(MeasuredScheduler, IsOffUnlessTheConfigTurnsItOn) {
   const Tuning off = Tuning::parse(scheduler_config(""));
   EXPECT_FALSE(off.scheduler.enabled);

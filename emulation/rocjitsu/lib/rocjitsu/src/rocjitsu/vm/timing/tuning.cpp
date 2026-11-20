@@ -228,6 +228,9 @@ Tuning Tuning::parse(const std::string &config_json) {
   const flexbuffers::Reference block = root.AsMap()["timing"];
   if (!block.IsMap())
     return tuning;
+  // The simulator's host-thread budget also bounds the scheduler's threads.
+  if (const flexbuffers::Reference budget = root.AsMap()["cpu_thread_budget"]; budget.IsNumeric())
+    tuning.scheduler.host_thread_budget = budget.AsUInt64();
 
   const flexbuffers::Map timing = block.AsMap();
   const flexbuffers::Reference enabled = timing["enabled"];

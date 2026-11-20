@@ -77,6 +77,10 @@ inline constexpr std::size_t kNumMatrixTypes = static_cast<std::size_t>(MatrixTy
 struct SchedulerTuning {
   /// @brief Replace the composed dispatch duration by the scheduled one.
   bool enabled = false;
+  /// @brief The config's top-level `cpu_thread_budget` (0: not set). Caps the
+  ///        host threads the units are scheduled on at dispatch end; not a
+  ///        `timing` key, and it does not change the schedule.
+  std::uint64_t host_thread_budget = 0;
   /// @brief SIMDs per CU; wavefronts are placed on them round-robin in launch order.
   std::uint64_t simds_per_cu = 4;
   /// @brief Wave issue interval, 4-byte encodings (run1).

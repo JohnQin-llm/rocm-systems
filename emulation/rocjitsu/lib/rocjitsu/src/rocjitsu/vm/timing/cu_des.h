@@ -206,6 +206,14 @@ public:
   ///        No-op unless Tuning::scheduler.enabled. @p memory, when given,
   ///        carries the dispatch-wide per-pc memory model (memory.pc_average).
   void run_schedule(std::uint64_t resident_waves, const DispatchMemory *memory = nullptr);
+  /// @brief run_schedule() in two halves, so that units can be scheduled
+  ///        concurrently: schedule_buffered() touches only this unit's
+  ///        buffered streams and returns false when there is nothing to
+  ///        schedule; apply_schedule() records the result (and writes the
+  ///        istream diagnostic) and is called in unit order.
+  bool schedule_buffered(std::uint64_t resident_waves, const DispatchMemory *memory,
+                         ScheduleResult &result);
+  void apply_schedule(const ScheduleResult &result);
   /// @brief The buffered streams; null when the scheduler is off.
   const ScheduleRecorder *recorder() const { return recorder_.get(); }
 
