@@ -439,6 +439,10 @@ struct DispatchEntry {
   /// Completion hooks and signal have already been delivered.
   bool completion_notified = false;
   bool execution_begun = false;
+  /// ROCJITSU_SAMPLED_CUS: workgroups that fold onto a compute unit the timing
+  /// plane does not export are completed at placement without executing. Set
+  /// at admission, before fan-out, so every shard carries it.
+  bool sampled = false;
   /// The packet carried an acquire fence of at least agent scope. Recorded on the
   /// entry so that every XCD running part of the grid can invalidate its own caches
   /// on its own thread, not just the one that read the packet.

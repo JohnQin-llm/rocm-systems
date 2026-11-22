@@ -36,6 +36,7 @@
 #include "simdojo/sim/clock_domain.h"
 
 #include <cstring>
+#include <string_view>
 #include <unordered_set>
 
 #include <atomic>
@@ -109,6 +110,46 @@ struct DispatchShape {
   std::uint32_t wave_size = 64;
 };
 
+/// @brief Sampled-CU emulation (ROCJITSU_SAMPLED_CUS*), read once when the plane
+///        is built. Off unless ROCJITSU_SAMPLED_CUS is set to a non-zero value.
+///
+/// @details When on, the command processor completes the workgroups of a
+/// sampled dispatch that fold onto a compute unit nobody exports without
+/// executing them, so functional execution and timing are paid only for the
+/// exported units (the istream units) plus @ref span neighbours on the same
+/// die. Whole-dispatch counters in the trace then cover the executed
+/// workgroups only; `skipped_workgroups` says how many were not executed.
+struct SamplingConfig {
+  bool enabled = false;
+  /// Also execute the next @c span folded units on the same die as each
+  /// exported unit (wrapping within the die), so the shared L2 sees neighbours.
+  std::uint32_t span = 0;
+  /// Dispatches with fewer workgroups than this are executed whole.
+  std::uint64_t min_workgroups = 512;
+  /// The first @c prefix_workgroups workgroups of a sampled grid always run.
+  std::uint64_t prefix_workgroups = 0;
+  /// Kernel-name substrings: a dispatch is sampled only if its name contains
+  /// one of @c include (empty: any named kernel) and none of @c exclude.
+  std::vector<std::string> include;
+  std::vector<std::string> exclude;
+  /// Mnemonic prefixes that make a kernel unsafe to sample. A rule written
+  /// `prefix+rtn` matches only an instruction that writes a register (a
+  /// returning atomic).
+  struct DenyRule {
+    std::string prefix;
+    bool returning_only = false;
+  };
+  std::vector<DenyRule> deny;
+  /// On an unsafe instruction in a sampled dispatch: exit with
+  /// @c unsafe_exit_code (true) or only report it (false).
+  bool exit_on_unsafe = true;
+  int unsafe_exit_code = 75;
+  /// Optional file each unsafe kernel name is appended to.
+  std::string deny_log;
+  /// Scale fabric and DRAM bandwidth by the executed share of compute units.
+  bool scale_bandwidth = false;
+};
+
 /// @brief The timed machine.
 class TimingPlane final : public TimeSource {
 public:
@@ -168,6 +209,24 @@ public:
   /// @brief True the first time @p pc is seen, so its mnemonic is written once.
   bool istream_first_pc(std::uint64_t pc) { return istream_pcs_.insert(pc).second; }
 
+  // -- Sampled-CU emulation (ROCJITSU_SAMPLED_CUS) ---------------------------
+  const SamplingConfig &sampling() const { return sampling_; }
+  /// @brief Whether a sampled dispatch must execute workgroup @p workgroup
+  ///        (grid-flat id, as the wavefront reports it); @p relative is its
+  ///        index within the grid. Immutable after construction: no lock.
+  bool keeps_workgroup(std::uint64_t workgroup, std::uint64_t relative) const {
+    if (!sampling_.enabled || relative < sampling_.prefix_workgroups || sample_keep_.empty())
+      return true;
+    return sample_keep_[fold_unit(workgroup)];
+  }
+  /// @brief Whether a dispatch of @p kernel_name with @p workgroups is sampled.
+  bool samples_dispatch(std::string_view kernel_name, std::uint64_t workgroups) const;
+  /// @brief Whether @p mnemonic makes a kernel unsafe to sample.
+  bool sampling_denies(std::string_view mnemonic, bool writes_register) const;
+  /// @brief Count workgroups of an open dispatch completed without executing.
+  ///        Callers hold the collector's plane lock.
+  void note_skipped(std::uint32_t dispatch_id, std::uint32_t queue_id, std::uint64_t count);
+
 private:
   void publish(std::uint64_t cycles);
   /// @brief Record what every component had moved, so a dispatch's own traffic
@@ -219,6 +278,11 @@ private:
   std::uint32_t istream_ends_ = 0;
   std::uint32_t istream_wg_ = 0;
   std::unordered_set<std::uint64_t> istream_pcs_;
+  /// @brief Sampled-CU settings and the folded units a sampled dispatch runs.
+  SamplingConfig sampling_;
+  std::vector<bool> sample_keep_;
+  /// @brief Workgroups skipped per open dispatch (packed key); trace only.
+  std::unordered_map<std::uint64_t, std::uint64_t> skipped_;
   /// @brief The request issue_memory() is waiting for, and its answer.
   std::uint64_t sequence_ = 0;
   std::uint32_t awaited_ = 0;

@@ -9,6 +9,8 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <string_view>
+#include <utility>
 
 #include <unistd.h>
 
@@ -35,6 +37,73 @@ std::uint64_t packed_key(std::uint32_t dispatch_id, std::uint32_t queue_id) {
   // processor and a multi-die part has one per die, so they collide across
   // dies and a bare id would close some other die's live dispatch.
   return (static_cast<std::uint64_t>(queue_id) << 32) | dispatch_id;
+}
+
+// -- Sampled-CU emulation settings -------------------------------------------
+
+std::uint64_t env_u64(const char *name, std::uint64_t fallback) {
+  const char *text = std::getenv(name);
+  return text != nullptr && *text != '\0' ? std::strtoull(text, nullptr, 10) : fallback;
+}
+
+bool env_flag(const char *name) {
+  const char *text = std::getenv(name);
+  return text != nullptr && *text != '\0' && std::strcmp(text, "0") != 0;
+}
+
+/// @brief Comma-separated list; empty items are dropped.
+std::vector<std::string> split_list(const char *text) {
+  std::vector<std::string> out;
+  if (text == nullptr)
+    return out;
+  std::string_view rest(text);
+  while (!rest.empty()) {
+    const std::size_t comma = rest.find(',');
+    const std::string_view item = rest.substr(0, comma);
+    if (!item.empty())
+      out.emplace_back(item);
+    if (comma == std::string_view::npos)
+      break;
+    rest.remove_prefix(comma + 1);
+  }
+  return out;
+}
+
+/// @brief Instructions that let one workgroup observe or wait for another:
+///        atomics, cache write-back / invalidate for agent-scope release and
+///        acquire, global wave sync and sleep (polling loops).
+constexpr const char *kDefaultSamplingDeny =
+    "global_atomic,buffer_atomic,flat_atomic,s_atomic,s_buffer_atomic,ds_gws,s_sleep,"
+    "buffer_wbl2,buffer_inv";
+
+SamplingConfig read_sampling_config() {
+  SamplingConfig config;
+  config.enabled = env_flag("ROCJITSU_SAMPLED_CUS");
+  if (!config.enabled)
+    return config;
+  config.span = static_cast<std::uint32_t>(env_u64("ROCJITSU_SAMPLED_CUS_SPAN", 0));
+  config.min_workgroups = env_u64("ROCJITSU_SAMPLED_CUS_MIN_WGS", 512);
+  config.prefix_workgroups = env_u64("ROCJITSU_SAMPLED_CUS_PREFIX_WGS", 0);
+  config.include = split_list(std::getenv("ROCJITSU_SAMPLED_CUS_KERNELS"));
+  config.exclude = split_list(std::getenv("ROCJITSU_SAMPLED_CUS_EXCLUDE"));
+  const char *deny = std::getenv("ROCJITSU_SAMPLED_CUS_DENY");
+  for (std::string &item : split_list(deny != nullptr ? deny : kDefaultSamplingDeny)) {
+    SamplingConfig::DenyRule rule;
+    constexpr std::string_view kReturning = "+rtn";
+    if (std::string_view(item).ends_with(kReturning)) {
+      rule.returning_only = true;
+      item.resize(item.size() - kReturning.size());
+    }
+    rule.prefix = std::move(item);
+    config.deny.push_back(std::move(rule));
+  }
+  if (const char *action = std::getenv("ROCJITSU_SAMPLED_CUS_ON_UNSAFE"); action != nullptr)
+    config.exit_on_unsafe = std::string_view(action) != "warn";
+  config.unsafe_exit_code = static_cast<int>(env_u64("ROCJITSU_SAMPLED_CUS_EXIT_CODE", 75));
+  if (const char *log = std::getenv("ROCJITSU_SAMPLED_CUS_DENYLOG"); log != nullptr)
+    config.deny_log = log;
+  config.scale_bandwidth = env_flag("ROCJITSU_SAMPLED_CUS_SCALE_BW");
+  return config;
 }
 
 } // namespace
@@ -80,6 +149,50 @@ TimingPlane::TimingPlane(Tuning tuning)
   const std::uint32_t dies = static_cast<std::uint32_t>(std::max<std::uint64_t>(1, tuning_.xcds));
   const std::uint32_t channels =
       static_cast<std::uint32_t>(std::max<std::uint64_t>(1, tuning_.memory_channels));
+
+  // Sampled-CU emulation: which folded units a sampled dispatch executes. The
+  // exported units are the instruction-stream ones (same variables, same
+  // defaults), each widened by `span` neighbours on its own die. Built from
+  // the same geometry fold_unit() uses once the components below exist.
+  sampling_ = read_sampling_config();
+  if (sampling_.enabled) {
+    const std::uint64_t per_die_units = std::max<std::uint64_t>(1, (units + dies - 1) / dies);
+    const std::uint64_t exported = env_u64("ROCJITSU_TIMING_ISTREAM_UNITS", 1);
+    const std::uint64_t stride =
+        std::max<std::uint64_t>(1, env_u64("ROCJITSU_TIMING_ISTREAM_STRIDE", 1));
+    sample_keep_.assign(units, false);
+    std::uint64_t kept = 0;
+    for (std::uint64_t unit = 0; unit < units; ++unit) {
+      if (unit % stride != 0 || unit / stride >= exported)
+        continue;
+      const std::uint64_t base = (unit / per_die_units) * per_die_units;
+      for (std::uint64_t step = 0; step <= sampling_.span && step < per_die_units; ++step) {
+        const std::uint64_t neighbour = base + (unit - base + step) % per_die_units;
+        if (neighbour < units && !sample_keep_[neighbour]) {
+          sample_keep_[neighbour] = true;
+          ++kept;
+        }
+      }
+    }
+    if (kept == 0) {
+      sample_keep_[0] = true;
+      kept = 1;
+    }
+    // Optional: give the executed units the share of the far bandwidth they
+    // would have on a fully loaded part, so their accesses queue as they would.
+    if (sampling_.scale_bandwidth) {
+      const double share = static_cast<double>(kept) / static_cast<double>(units);
+      tuning_.fabric_bytes_per_cycle *= share;
+      tuning_.dram_bytes_per_cycle *= share;
+    }
+    std::fprintf(stderr,
+                 "rocjitsu: ROCJITSU_SAMPLED_CUS on: %llu of %u units executed (span %u, min %llu "
+                 "workgroups, prefix %llu)%s\n",
+                 static_cast<unsigned long long>(kept), units, sampling_.span,
+                 static_cast<unsigned long long>(sampling_.min_workgroups),
+                 static_cast<unsigned long long>(sampling_.prefix_workgroups),
+                 sampling_.scale_bandwidth ? ", far bandwidth scaled" : "");
+  }
 
   // The line pool is reserved once and never reallocated while a request is in
   // flight: a request refers to its lines by an index into it, and a
@@ -216,6 +329,14 @@ void TimingPlane::trace_dispatch(const DispatchDes &dispatch) {
   number("waves", static_cast<unsigned long long>(dispatch.waves()));
   number("instructions", static_cast<unsigned long long>(dispatch.instructions()));
   number("workgroups", shape.workgroup_count);
+  // Only with ROCJITSU_SAMPLED_CUS on, so a run without it writes the same line
+  // as before. Counters above (waves, instructions, bytes, class counts) cover
+  // the executed workgroups only.
+  if (sampling_.enabled) {
+    const auto skipped = skipped_.find(packed_key(shape.dispatch_id, shape.queue_id));
+    number("skipped_workgroups",
+           static_cast<unsigned long long>(skipped != skipped_.end() ? skipped->second : 0));
+  }
   number("waves_per_workgroup", shape.waves_per_workgroup);
   number("vgprs", shape.vector_registers_per_wave);
   number("sgprs", shape.scalar_registers_per_wave);
@@ -278,6 +399,37 @@ std::size_t TimingPlane::fold_unit(std::uint64_t workgroup) const {
 
 ComputeUnitDes &TimingPlane::compute_unit(std::uint32_t index) {
   return *compute_units_[fold_unit(index)];
+}
+
+bool TimingPlane::samples_dispatch(std::string_view kernel_name, std::uint64_t workgroups) const {
+  // An unnamed kernel is never sampled: it cannot be named in an exclude list,
+  // and the runtime's own helper dispatches are among them.
+  if (!sampling_.enabled || sample_keep_.empty() || kernel_name.empty() ||
+      workgroups < sampling_.min_workgroups)
+    return false;
+  for (const std::string &excluded : sampling_.exclude)
+    if (kernel_name.find(excluded) != std::string_view::npos)
+      return false;
+  if (sampling_.include.empty())
+    return true;
+  for (const std::string &included : sampling_.include)
+    if (kernel_name.find(included) != std::string_view::npos)
+      return true;
+  return false;
+}
+
+bool TimingPlane::sampling_denies(std::string_view mnemonic, bool writes_register) const {
+  for (const SamplingConfig::DenyRule &rule : sampling_.deny)
+    if (mnemonic.starts_with(rule.prefix) && (!rule.returning_only || writes_register))
+      return true;
+  return false;
+}
+
+void TimingPlane::note_skipped(std::uint32_t dispatch_id, std::uint32_t queue_id,
+                               std::uint64_t count) {
+  if (!sampling_.enabled || count == 0)
+    return;
+  skipped_[packed_key(dispatch_id, queue_id)] += count;
 }
 
 std::uint64_t TimingPlane::issue_memory(const MemoryRequest &request,
@@ -353,6 +505,8 @@ void TimingPlane::dispatch_begin(const DispatchShape &shape) {
       std::make_unique<DispatchDes>("dispatch", shader_, engine_, tuning_, std::move(units));
   dispatch->begin(shape);
   const std::uint64_t key = packed_key(shape.dispatch_id, shape.queue_id);
+  if (sampling_.enabled)
+    skipped_.erase(key);
   std::unique_ptr<DispatchDes> displaced;
   {
     std::lock_guard<std::mutex> guard(mutex_);
@@ -639,6 +793,8 @@ void TimingPlane::dispatch_end(std::uint32_t dispatch_id, std::uint32_t queue_id
   charge_bandwidth(*dispatch, key);
   dispatch->end();
   trace_dispatch(*dispatch);
+  if (sampling_.enabled)
+    skipped_.erase(key);
   if (istream_ != nullptr) {
     IStreamRecord record;
     record.type = 5;
