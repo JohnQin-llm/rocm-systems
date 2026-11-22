@@ -2563,14 +2563,33 @@ CommandProcessor::dispatch_workgroups(DispatchEntry &entry) {
     // is claimed: the dispatch and queue ids are written above, after that
     // returns, and a wavefront announced without them would be attributed to
     // dispatch zero on every queue.
-    if (timing_ != nullptr)
+    if (timing_ != nullptr) {
+      // ROCJITSU_SAMPLED_CUS: tag the waves first, so the collector checks a
+      // sampled dispatch's instructions even while timing has not started.
+      if (timing_->sampling())
+        for (auto *wf : wg_wavefronts)
+          timing_->wave_sampling(*wf, entry.sampled);
       for (auto *wf : wg_wavefronts)
         timing_->wave_dispatched(*wf);
+    }
 
     ++entry.dispatched_wgs;
     ++dispatched;
     dispatched_workgroups_.fetch_add(1, std::memory_order_relaxed);
     return VmAccessOutcome::Complete;
+  };
+
+  // ROCJITSU_SAMPLED_CUS: workgroups completed at placement without executing.
+  uint64_t skipped = 0;
+  const auto report_skipped = [&]() {
+    if (skipped == 0)
+      return;
+    if (timing_ != nullptr)
+      timing_->workgroups_skipped(entry.dispatch_id, entry.queue_id, skipped);
+    // Retirement runs from the completion drain. When a share was skipped
+    // entirely no compute unit goes idle to trigger one, so ask for a pass.
+    if (engine())
+      engine()->schedule_event_now(doorbell_event());
   };
 
   while (entry.dispatched_wgs < entry.total_wgs) {
@@ -2647,6 +2666,22 @@ CommandProcessor::dispatch_workgroups(DispatchEntry &entry) {
     uint32_t local_wg_id = entry.chunk_ordinal_for(entry.dispatched_wgs);
     uint32_t global_wg_id = local_wg_id + entry.workgroup_id_offset;
 
+    // ROCJITSU_SAMPLED_CUS: a workgroup that folds onto a compute unit the
+    // timing plane does not sample is completed here without executing: no
+    // waves, no CU resources, no plugin or timing hooks. It is counted as
+    // dispatched and completed in one step, which is everything retirement,
+    // the barrier bit and grid-wide completion look at. The id is the grid-flat
+    // one the wavefront would have reported, so the plane folds it exactly as
+    // it folds an executed workgroup.
+    if (entry.sampled && timing_ != nullptr &&
+        !timing_->keeps_workgroup(global_wg_id, local_wg_id)) {
+      ++entry.dispatched_wgs;
+      ++entry.completed_wgs;
+      ++dispatched;
+      ++skipped;
+      continue;
+    }
+
     // SPI selects the CU or sibling-CU WGP based on descriptor mode and
     // resource availability.
     std::optional<ShaderProcessorInput::WorkgroupPlacement> placement;
@@ -2684,6 +2719,7 @@ CommandProcessor::dispatch_workgroups(DispatchEntry &entry) {
     if (placement_outcome != VmAccessOutcome::Complete)
       return {.dispatched = dispatched, .outcome = placement_outcome};
   }
+  report_skipped();
   return {.dispatched = dispatched, .outcome = VmAccessOutcome::Complete};
 }
 
@@ -4387,6 +4423,14 @@ AqlAdmissionResult CommandProcessor::admit_kernel_dispatch(
   plugin_group_->onAmdgpuDispatchPacketProcessed(dispatch_info);
   if (timing_ != nullptr)
     timing_->dispatch_packet(dispatch_info);
+  // ROCJITSU_SAMPLED_CUS: decided once per dispatch, here, so every XCD's share
+  // inherits it through fan-out. Clustered and WGP-mode dispatches place
+  // several workgroups as a unit and are always executed whole.
+  if (timing_ != nullptr && timing_->sampling() && !dp.wgp_mode &&
+      !dp.has_workgroup_clusters() && timing_->sampling_wanted(kernel_name, total_wgs)) {
+    dp.sampled = true;
+    timing_->dispatch_sampled(dp.dispatch_id, dp.queue_id, kernel_name);
+  }
 
   util::Logger::vm([&](auto &os) {
     os << std::format("dispatch #{} d={} \"{}\" symbol=\"{}\" grid=[{},{},{}] wg=[{},{},{}] wgs={} "
