@@ -18,6 +18,7 @@
 #include "rocjitsu/base/rj_compiler.h"
 #include "rocjitsu/config/dbt_guest_config.h"
 #include "rocjitsu/kmd/linux/amdgpu_properties.h"
+#include "rocjitsu/kmd/linux/deterministic_va.h"
 #include "rocjitsu/kmd/linux/guest_kfd.h"
 #include "rocjitsu/kmd/linux/host_access_guard.h"
 #include "rocjitsu/kmd/linux/host_mapping_lock.h"
@@ -4500,6 +4501,10 @@ RJ_INTERPOSER_EXPORT int open(const char *path, int flags, ...) {
     return drm_fd.fd;
 
   if (std::strcmp(path, "/dev/kfd") == 0) {
+    // The runtime opens the KFD before it allocates anything: learn where its
+    // code is now, so its address reservations can be placed deterministically
+    // (deterministic_va.h).
+    rocjitsu::kmd::note_gpu_runtime_text();
     // Use the fd captured under remote_mutex_ (not a fresh remote_kfd_fd() read),
     // so a concurrent dup2/dup3 that invalidates the primary fd cannot make this
     // return -1 or a reused non-KFD descriptor.
@@ -5708,8 +5713,40 @@ static void *mmap_impl(void *addr, size_t length, int prot, int flags, int fd, o
 static void *mmap_with_dump_policy(void *addr, size_t length, int prot, int flags, int fd,
                                    off_t offset);
 
+/// @brief Place the GPU runtime's address reservation from the deterministic
+///        arena, or return null to leave the call to the ordinary path.
+/// @details GPU virtual addresses are these host addresses, and the kernel's
+/// own placement of them depends on ASLR, the environment's size and every
+/// other thread's mappings, which made device buffers -- and with them the
+/// timing plane's cache sets and traffic -- move between identical runs.
+/// Only calls that both look like a reservation and come from the runtime's
+/// code are taken: glibc's malloc reserves its heaps with the same flags, from
+/// whichever thread first needs one.
+static void *deterministic_reservation(const void *caller, void *addr, size_t length, int prot,
+                                       int flags, int fd) {
+  if (!rocjitsu::kmd::DeterministicVaArena::is_reservation(addr, length, prot, flags, fd))
+    return nullptr;
+  if (!InterposerContext::real().ready() || !InterposerContext::real().mmap ||
+      !rj_owns_interposer_state() || !rocjitsu::kmd::is_gpu_runtime_caller(caller))
+    return nullptr;
+  auto *arena = rocjitsu::kmd::runtime_va_arena();
+  if (arena == nullptr)
+    return nullptr;
+  const int saved_errno = errno;
+  void *placed = with_host_mapping_held(
+      [&] { return arena->reserve(length, prot, flags, InterposerContext::real().mmap); });
+  if (placed == MAP_FAILED) {
+    errno = saved_errno;
+    return nullptr;
+  }
+  return placed;
+}
+
 RJ_INTERPOSER_EXPORT void *mmap(void *addr, size_t length, int prot, int flags, int fd,
                                 off_t offset) {
+  if (void *placed = deterministic_reservation(__builtin_return_address(0), addr, length, prot,
+                                               flags, fd))
+    return placed;
   return mmap_with_dump_policy(addr, length, prot, flags, fd, offset);
 }
 
@@ -5720,6 +5757,9 @@ RJ_INTERPOSER_EXPORT void *mmap64(void *addr, size_t length, int prot, int flags
   // offset truncation.
   static_assert(sizeof(off_t) == sizeof(off64_t),
                 "mmap64 would truncate its offset: off_t is narrower than off64_t");
+  if (void *placed = deterministic_reservation(__builtin_return_address(0), addr, length, prot,
+                                               flags, fd))
+    return placed;
   return mmap_with_dump_policy(addr, length, prot, flags, fd, static_cast<off_t>(offset));
 }
 
