@@ -123,6 +123,9 @@ struct RetiredInstruction {
   std::uint32_t bytes_per_lane = 4;
   MemorySpace space = MemorySpace::None;
   bool is_load = true;
+  /// @brief A vector-memory load whose payload goes to LDS instead of VGPRs
+  ///        (`buffer_load ... lds`, `global_load_lds_*`; VectorMemState::lds_dst).
+  bool lds_destination = false;
   bool non_temporal = false;
   /// @brief A store at system scope, which no cache may hold dirty.
   bool write_through = false;
@@ -206,14 +209,17 @@ public:
   ///        No-op unless Tuning::scheduler.enabled. @p memory, when given,
   ///        carries the dispatch-wide per-pc memory model (memory.pc_average).
   void run_schedule(std::uint64_t resident_waves, const DispatchMemory *memory = nullptr);
-  /// @brief run_schedule() in two halves, so that units can be scheduled
-  ///        concurrently: schedule_buffered() touches only this unit's
+  /// @brief run_schedule() in three parts, so that units can be scheduled
+  ///        concurrently: schedule_buffered() reads only this unit's
   ///        buffered streams and returns false when there is nothing to
   ///        schedule; apply_schedule() records the result (and writes the
-  ///        istream diagnostic) and is called in unit order.
+  ///        istream diagnostic) and is called in unit order; clear_buffered()
+  ///        drops the streams once the dispatch no longer needs them (the
+  ///        device dispatcher may schedule a unit again).
   bool schedule_buffered(std::uint64_t resident_waves, const DispatchMemory *memory,
-                         ScheduleResult &result);
+                         ScheduleResult &result) const;
   void apply_schedule(const ScheduleResult &result);
+  void clear_buffered();
   /// @brief The buffered streams; null when the scheduler is off.
   const ScheduleRecorder *recorder() const { return recorder_.get(); }
 

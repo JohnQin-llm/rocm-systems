@@ -10,6 +10,8 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdlib>
+#include <limits>
+#include <map>
 #include <system_error>
 #include <thread>
 #include <utility>
@@ -251,7 +253,7 @@ std::size_t scheduler_threads(std::uint64_t budget) {
 
 } // namespace
 
-void DispatchDes::schedule_units(const DispatchMemory *memory) {
+void DispatchDes::schedule_units(const DispatchMemory *memory, std::vector<WorkgroupSpan> &spans) {
   // A unit's schedule depends only on its own buffered streams and the shared,
   // read-only memory table, so units are scheduled on several threads and the
   // results applied in unit order: the outcome does not depend on the thread
@@ -295,9 +297,111 @@ void DispatchDes::schedule_units(const DispatchMemory *memory) {
     for (std::thread &thread : pool)
       thread.join();
   }
-  for (std::size_t index = 0; index < units_.size(); ++index)
-    if (scheduled[index] != 0)
-      units_[index]->apply_schedule(results[index]);
+  spans.clear();
+  for (std::size_t index = 0; index < units_.size(); ++index) {
+    if (scheduled[index] == 0)
+      continue;
+    units_[index]->apply_schedule(results[index]);
+    spans.insert(spans.end(), results[index].workgroup_spans.begin(),
+                 results[index].workgroup_spans.end());
+  }
+}
+
+double DispatchDes::busy_dispatch(const DispatchMemory *memory, const std::vector<WorkgroupSpan> &spans) {
+  // kernel_eval8 M2_DISP=busy (merge12; disp2 D2_DISP=busy) on every unit.
+  const SchedulerTuning &scheduler = tuning_.scheduler;
+  const std::uint64_t workgroups = shape_.workgroup_count;
+  if (!scheduler.dispatch_busy || workgroups == 0 || spans.empty())
+    return -1.0;
+  const std::uint64_t per_group = std::max<std::uint64_t>(1, shape_.waves_per_workgroup);
+  const std::uint64_t cap = std::max<std::uint64_t>(1, scheduler_resident_waves_ / per_group);
+  const std::uint64_t cus = std::max<std::uint64_t>(1, tuning_.compute_units);
+  // Each workgroup's residence; one the units did not schedule (no records)
+  // takes, as in the replay, a hashed workgroup of the nearest round.
+  std::map<std::uint64_t, double> exact;
+  for (const WorkgroupSpan &span : spans)
+    exact[span.workgroup] = span.end - span.start;
+  std::map<std::uint64_t, std::vector<double>> by_round;
+  for (const auto &[group, residence] : exact)
+    by_round[group / cus].push_back(residence);
+  const auto duration = [&](std::uint64_t group) {
+    if (const auto found = exact.find(group); found != exact.end())
+      return found->second;
+    std::uint64_t round = group / cus;
+    if (by_round.find(round) == by_round.end()) {
+      std::uint64_t best = by_round.begin()->first;
+      for (const auto &[candidate, residences] : by_round) {
+        const std::uint64_t distance = candidate > round ? candidate - round : round - candidate;
+        const std::uint64_t best_distance = best > round ? best - round : round - best;
+        if (distance < best_distance)
+          best = candidate;
+      }
+      round = best;
+    }
+    const std::vector<double> &residences = by_round.at(round);
+    std::uint64_t hash = (group * 2654435761ull) & 0xFFFFFFFFull;
+    hash ^= hash >> 15;
+    return residences[static_cast<std::size_t>(hash % residences.size())];
+  };
+  const DispatchPlacement placement =
+      simulate_dispatch(scheduler, tuning_.xcds, tuning_.compute_units, workgroups, cap, per_group,
+                        scheduler.workgroup_launch_cycles, duration);
+  terms_.dispatch_busiest = placement.busiest;
+
+  // The slowest scheduled unit, ties to the one holding the lowest workgroup
+  // (the replay's export order).
+  const ComputeUnitDes *slowest = nullptr;
+  std::uint32_t slowest_first = 0;
+  for (const ComputeUnitDes *unit : units_) {
+    if (unit == nullptr || unit->recorder() == nullptr || unit->occupancy().scheduled_waves == 0)
+      continue;
+    // A unit that collapsed a stream-K spin: its end waits for a partner
+    // rather than for its own workgroups (kernel_eval8 skips flag-spin items).
+    if (unit->occupancy().spin_arrival >= 0.0)
+      return -1.0;
+    std::uint32_t first = std::numeric_limits<std::uint32_t>::max();
+    for (const SchedWave &wave : unit->recorder()->waves())
+      if (!wave.records.empty())
+        first = std::min(first, wave.workgroup);
+    const double end = unit->occupancy().scheduled_end;
+    if (slowest == nullptr || end > slowest->occupancy().scheduled_end ||
+        (end == slowest->occupancy().scheduled_end && first < slowest_first)) {
+      slowest = unit;
+      slowest_first = first;
+    }
+  }
+  if (slowest == nullptr)
+    return -1.0;
+  // Its workgroups in the order it first saw them.
+  const std::vector<SchedWave> &held = slowest->recorder()->waves();
+  std::vector<std::uint32_t> groups;
+  for (const SchedWave &wave : held)
+    if (!wave.records.empty() && std::find(groups.begin(), groups.end(), wave.workgroup) == groups.end())
+      groups.push_back(wave.workgroup);
+  terms_.dispatch_unit_workgroups = groups.size();
+  if (groups.empty() || placement.busiest <= groups.size())
+    return -1.0;
+  // The extra workgroups are copies of its own last ones, with ids after all
+  // of its own so that they launch last.
+  std::vector<SchedWave> waves(held.begin(), held.end());
+  const std::uint32_t last = *std::max_element(groups.begin(), groups.end());
+  for (std::uint64_t extra = 0; extra < placement.busiest - groups.size(); ++extra) {
+    const std::uint32_t source = groups[groups.size() - 1 - extra % groups.size()];
+    for (const SchedWave &wave : held) {
+      if (wave.workgroup != source || wave.records.empty())
+        continue;
+      waves.push_back(wave);
+      waves.back().workgroup = static_cast<std::uint32_t>(last + cus * (extra + 1));
+    }
+  }
+  const ScheduleResult again =
+      memory != nullptr
+          ? schedule_compute_unit(scheduler, slowest->recorder()->rules(), waves, scheduler_resident_waves_,
+                                  *memory)
+          : schedule_compute_unit(scheduler, slowest->recorder()->rules(), waves, scheduler_resident_waves_,
+                                  ScheduleMemory{});
+  terms_.dispatch_busy_end = static_cast<std::uint64_t>(std::ceil(again.end));
+  return again.end;
 }
 
 void DispatchDes::end() {
@@ -346,7 +450,8 @@ void DispatchDes::end() {
     }
     // The occupancy limit, not what the unit happened to hold: workgroups
     // launch into it as earlier ones retire.
-    schedule_units(with_memory);
+    std::vector<WorkgroupSpan> spans;
+    schedule_units(with_memory, spans);
     std::vector<UnitEnd> ends;
     for (ComputeUnitDes *unit : units_) {
       if (unit == nullptr)
@@ -358,6 +463,13 @@ void DispatchDes::end() {
       terms_.spin_units += occupancy.spin_arrival >= 0.0 ? 1 : 0;
       terms_.saturated_units += occupancy.scheduled_saturated ? 1 : 0;
     }
+    // The device dispatcher: a CU it gives more workgroups than the slowest
+    // unit held ends no earlier than that unit scheduled with them.
+    if (const double busy = busy_dispatch(with_memory, spans); busy >= 0.0)
+      ends.push_back({busy, -1.0});
+    for (ComputeUnitDes *unit : units_)
+      if (unit != nullptr)
+        unit->clear_buffered();
     terms_.occupancy = scheduler_resident_waves_;
     for (const double end : hold_spinning_units(ends, tuning_.scheduler.spin_poll_cycles))
       terms_.scheduled = std::max(terms_.scheduled, static_cast<std::uint64_t>(std::ceil(end)));

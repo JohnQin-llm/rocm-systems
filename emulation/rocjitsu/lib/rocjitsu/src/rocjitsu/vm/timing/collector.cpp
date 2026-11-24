@@ -243,6 +243,9 @@ bool fill_memory(const Instruction &inst, const amdgpu::Wavefront &wf, Collected
 
   const auto *vector = inst.data_as<amdgpu::VectorMemState>();
   retired.is_load = vector->is_load;
+  // A load to LDS (LDS-DMA) has no VGPR destination; the functional plane
+  // knows, so the timing model need not infer it from the operand list.
+  retired.lds_destination = vector->is_load && vector->lds_dst;
   retired.non_temporal = vector->non_temporal;
   // System scope: the store has to reach memory, so a write-back cache may not
   // keep it. The decoder folds the scope bits into the memory type.

@@ -282,9 +282,38 @@ struct SchedulerTuning {
   ///        hardware thread traces of the next workgroup's first issue).
   bool slot_release_at_completion = true;
   /// @brief A workgroup launched after the first starts this long after its
-  ///        slots free (R9_LAUNCH; under_diag d7/d8: ~180 cycles from the
-  ///        last wave's end to the next workgroup's first issue). 0: off.
-  double workgroup_launch_cycles = 180.0;
+  ///        slots free -- with slot_release_at_completion, after the last
+  ///        store acknowledgement -- (M2_RL_D0 of merge12, replacing R9_LAUNCH
+  ///        180; aiterfa/relaunch2 thread traces: first wave ~100 cycles after
+  ///        the ack; ubench disp_b set b: ack -> next start 423-459 including
+  ///        the probe's own second store). Later waves of the workgroup are
+  ///        not staggered (RL_DW unresolved: 3-7 cycles in the ubench, ~60 in
+  ///        real-kernel traces). Also the device dispatch simulation's
+  ///        relaunch latency. 0: off.
+  double workgroup_launch_cycles = 100.0;
+  /// @brief Device-level workgroup dispatcher (merge12 M2_DISP=busy;
+  ///        aiterfa/disp2, ubench disp_a / disp_b, 156 + 24 launches within
+  ///        0.4% / 0.8% median): simulate_dispatch() places every workgroup
+  ///        with the units' scheduled residences; when its busiest CU holds
+  ///        more workgroups than the slowest scheduled unit, that unit is
+  ///        scheduled again with the extra workgroups (copies of its own last
+  ///        ones, launched last) and the dispatch ends no earlier than that.
+  ///        Skipped when a unit collapsed a stream-K spin. Every CU is
+  ///        scheduled here, so the replay's sampling gate does not apply.
+  ///        False: the even placement (workgroup i on unit i mod CUs).
+  bool dispatch_busy = true;
+  /// @brief Shader engines per XCD; CUs per engine = CUs / XCDs / engines (disp2 README section 1).
+  std::uint64_t dispatch_shader_engines = 4;
+  /// @brief The k-th workgroup of an XCD goes to engine order[k % engines]:
+  ///        (2, 0, 1, 3) on XCDs 1-7 and (0, 1, 3, 2) on XCD 0 (ubench
+  ///        disp_a, 100% of workgroups in every round).
+  std::vector<std::uint64_t> dispatch_se_order = {2, 0, 1, 3};
+  std::vector<std::uint64_t> dispatch_se_order_xcd0 = {0, 1, 3, 2};
+  /// @brief A relaunched workgroup holds its XCD's queue
+  ///        max(issue_cycles, issue_cycles_per_wave x waves) (ubench disp_a:
+  ///        4.0-4.5 cycles per workgroup for W <= 4, 16.2 for W = 16).
+  double dispatch_issue_cycles = 4.0;
+  double dispatch_issue_cycles_per_wave = 1.0;
   /// @brief Wave slots per SIMD (M_SIMDSLOT, branch B / swln_diag): each SIMD
   ///        holds resident / simds wavefronts; a workgroup's wavefronts spread
   ///        evenly over the least-loaded SIMDs and it launches only when they

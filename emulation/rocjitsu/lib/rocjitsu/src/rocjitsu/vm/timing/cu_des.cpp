@@ -438,6 +438,32 @@ namespace {
 
 AccessCost lds_access(const Tuning &tuning, const RetiredInstruction &retired) {
   AccessCost cost;
+  // A cross-lane permute (ds_bpermute_b32, ds_permute_b32, ds_swizzle_b32)
+  // goes through the local data share's crossbar but addresses lanes, not
+  // memory, so it has no bank to conflict on and the functional side reports no
+  // addresses for it. Charging it the widest conflict the wavefront could
+  // produce -- 64 passes each -- made the attention variants that reduce with
+  // bpermute read as LDS bound when on MI355X they are the fastest.
+  //
+  // Tested before touched_nothing(): a permute's empty address list is what
+  // it always reports, not an access no lane took part in, and the test below
+  // would otherwise charge every permute one cycle. The measured scheduler
+  // prices it at the measured crossbar cost (scheduler.lds.permute_cycles, 6,
+  // address independent; ubench f8lds_*).
+  if (!has_addresses(retired) && retired.mnemonic != nullptr &&
+      (retired.mnemonic->find("permute") != std::string::npos ||
+       retired.mnemonic->find("swizzle") != std::string::npos)) {
+    if (tuning.scheduler.enabled && tuning.scheduler.lds_permute_cycles > 0.0)
+      cost.issue_cycles = std::max<std::uint64_t>(
+          1, static_cast<std::uint64_t>(std::ceil(tuning.scheduler.lds_permute_cycles)));
+    else
+      cost.issue_cycles =
+          tuning.lds_granule_bytes != 0
+              ? std::max<std::uint64_t>(1, static_cast<std::uint64_t>(tuning.lds_cycles_per_way + 0.5))
+              : 1;
+    cost.latency_cycles = tuning.lds_latency_cycles + cost.issue_cycles;
+    return cost;
+  }
   if (touched_nothing(retired)) {
     cost.issue_cycles = 1;
     cost.latency_cycles = tuning.lds_latency_cycles;
@@ -445,22 +471,6 @@ AccessCost lds_access(const Tuning &tuning, const RetiredInstruction &retired) {
   }
 
   const std::uint64_t banks = std::max<std::uint64_t>(1, tuning.lds_banks);
-  // A cross-lane permute (ds_bpermute_b32, ds_permute_b32, ds_swizzle_b32)
-  // goes through the local data share's crossbar but addresses lanes, not
-  // memory, so it has no bank to conflict on and the functional side reports no
-  // addresses for it. Charging it the widest conflict the wavefront could
-  // produce -- 64 passes each -- made the attention variants that reduce with
-  // bpermute read as LDS bound when on MI355X they are the fastest.
-  if (!has_addresses(retired) && retired.mnemonic != nullptr &&
-      (retired.mnemonic->find("permute") != std::string::npos ||
-       retired.mnemonic->find("swizzle") != std::string::npos)) {
-    cost.issue_cycles =
-        tuning.lds_granule_bytes != 0
-            ? std::max<std::uint64_t>(1, static_cast<std::uint64_t>(tuning.lds_cycles_per_way + 0.5))
-            : 1;
-    cost.latency_cycles = tuning.lds_latency_cycles + cost.issue_cycles;
-    return cost;
-  }
   if (!has_addresses(retired)) {
     // Charge the widest conflict the wavefront could have produced, and charge
     // it *here* rather than in global memory: losing the addresses does not
@@ -951,14 +961,20 @@ void ComputeUnitDes::run_schedule(std::uint64_t resident_waves, const DispatchMe
   ScheduleResult result;
   if (schedule_buffered(resident_waves, memory, result))
     apply_schedule(result);
+  clear_buffered();
 }
 
 bool ComputeUnitDes::schedule_buffered(std::uint64_t resident_waves, const DispatchMemory *memory,
-                                       ScheduleResult &result) {
+                                       ScheduleResult &result) const {
   if (!recorder_ || recorder_->empty())
     return false;
-  result = recorder_->run(resident_waves, memory);
+  result = recorder_->schedule(resident_waves, memory);
   return true;
+}
+
+void ComputeUnitDes::clear_buffered() {
+  if (recorder_)
+    recorder_->clear();
 }
 
 void ComputeUnitDes::apply_schedule(const ScheduleResult &result) {

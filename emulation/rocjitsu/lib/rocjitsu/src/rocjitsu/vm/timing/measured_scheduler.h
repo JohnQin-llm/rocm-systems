@@ -47,6 +47,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <span>
 #include <string>
 #include <unordered_map>
@@ -108,6 +109,9 @@ struct SchedRule {
   bool cnd32 = false;
   /// @brief LDS cycles a buffer/global load to LDS also takes (lds_dma_cycles).
   double lds_dma = 0.0;
+  /// @brief The access writes its payload to LDS, not to VGPRs
+  ///        (RetiredInstruction::lds_destination); part of the rule's identity.
+  bool lds_destination = false;
   /// @brief Cycles from issue until the destination registers are readable;
   ///        the record's latency when latency_dynamic, the pipe occupancy when
   ///        latency_is_occupancy.
@@ -152,8 +156,23 @@ struct SchedWave {
   std::vector<SchedRecord> records;
 };
 
+/// @brief When one workgroup ran on its unit: its first wavefront's start
+///        (launch delay and exposed fetch included) and its last wavefront's
+///        end (completion: outstanding accesses and store acks included).
+struct WorkgroupSpan {
+  std::uint32_t workgroup = 0;
+  double start = 0.0;
+  double end = 0.0;
+};
+
 /// @brief What scheduling one compute unit produced.
 struct ScheduleResult {
+  /// @brief Each workgroup's residence on the unit, in workgroup-id order,
+  ///        from the LAST schedule pass that ran: with the saturated-device
+  ///        bisection that is the last probe, not necessarily the returned
+  ///        one (istream_replay12 LAST_SPANS, read by kernel_eval8's
+  ///        M2_DISP=busy).
+  std::vector<WorkgroupSpan> workgroup_spans;
   /// @brief Cycle the last wavefront retired, from the first launch at 0.
   double end = 0.0;
   /// @brief Sum of wavefront lifetimes (end - start).
@@ -322,11 +341,45 @@ std::string normalized_mnemonic(const std::string &mnemonic);
 /// @brief Bytes one wave64 instruction moves, from its mnemonic (dwordxN, _bN, read2/write2).
 double wave_bytes(const std::string &mnemonic);
 
-/// @brief Derive the static rule of one instruction.
+/// @brief Derive the static rule of one instruction. @p lds_destination: a
+///        vector-memory load that writes LDS instead of VGPRs (LDS-DMA).
 SchedRule make_rule(const SchedulerTuning &tuning, const std::string &mnemonic,
                     InstClass inst_class, std::uint8_t size_bytes, std::uint16_t immediate,
                     const RegisterRanges &reads, const RegisterRanges &writes,
-                    const std::array<std::uint32_t, kNumWaitCounters> &wait, std::uint64_t pc);
+                    const std::array<std::uint32_t, kNumWaitCounters> &wait, std::uint64_t pc,
+                    bool lds_destination = false);
+
+/// @brief What the device-level workgroup dispatch simulation produced.
+struct DispatchPlacement {
+  /// @brief Latest workgroup end over every CU.
+  double end = 0.0;
+  /// @brief Workgroups each CU received, indexed
+  ///        (xcd x shader engines + engine) x CUs per engine + CU.
+  std::vector<std::uint64_t> workgroups_per_cu;
+  /// @brief The largest entry of workgroups_per_cu.
+  std::uint64_t busiest = 0;
+};
+
+/// @brief The measured MI355X workgroup dispatcher over a whole device
+///        (bench/aiterfa/disp2/disp_sim.py sim_rr, ramp off; README section 1).
+///
+/// @details Workgroup i goes to XCD i % xcds; each XCD launches its own
+/// workgroups strictly in id order. The k-th workgroup of an XCD goes to
+/// shader engine order[k % engines] (dispatch_se_order; XCD 0 uses
+/// dispatch_se_order_xcd0). Within the engine a round-robin pointer (engine s
+/// starts at CU s) gives it the first CU, cyclically after the last one used,
+/// that has room (fewer than @p cap of the dispatch's workgroups resident);
+/// when no CU of that engine has room the whole XCD queue waits for the first
+/// slot to free, plus @p launch cycles (the relaunch delay). A workgroup that
+/// takes a freed slot holds the XCD's queue max(dispatch_issue_cycles,
+/// dispatch_issue_cycles_per_wave x waves) cycles; first-round launches are
+/// not throttled (the kernel-level ramp covers them). @p duration gives each
+/// workgroup's residence (first wave start to last wave end) in cycles.
+DispatchPlacement simulate_dispatch(const SchedulerTuning &tuning, std::uint64_t xcds,
+                                    std::uint64_t compute_units, std::uint64_t workgroups,
+                                    std::uint64_t cap, std::uint64_t waves_per_workgroup,
+                                    double launch,
+                                    const std::function<double(std::uint64_t)> &duration);
 
 /// @brief Dispatch-wide mean memory behaviour of one vector-memory pc
 ///        (replay3..7 build_pc_avg, REPLAY_SYMM).
@@ -434,6 +487,9 @@ public:
   /// @brief Schedule everything buffered and forget it. With @p memory, the
   ///        pc-averaged memory model and its two-pass queue apply.
   ScheduleResult run(std::uint64_t resident, const DispatchMemory *memory = nullptr);
+  /// @brief As run(), keeping the buffered streams (the dispatcher may
+  ///        schedule the unit again with more workgroups).
+  ScheduleResult schedule(std::uint64_t resident, const DispatchMemory *memory = nullptr) const;
   void clear();
   bool empty() const { return waves_.empty(); }
 
