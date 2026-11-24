@@ -624,6 +624,7 @@ add_executable(
     util_intrusive_list_test.cpp
     util_observable_shared_mutex_test.cpp
     host_mapping_lock_test.cpp
+    deterministic_va_test.cpp
     util_result_test.cpp
     util_bit_test.cpp
     util_unique_handle_test.cpp
