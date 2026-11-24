@@ -18,6 +18,7 @@
 
 #include <array>
 #include <cmath>
+#include <map>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -40,7 +41,7 @@ public:
            std::uint64_t latency = 0, std::uint8_t counter = 0xFF, std::uint8_t priority = 0,
            RegisterRanges reads = {}, RegisterRanges writes = {},
            std::array<std::uint32_t, kNumWaitCounters> wait = unconstrained(),
-           std::uint16_t immediate = 0) {
+           std::uint16_t immediate = 0, bool lds_destination = false) {
     mnemonics_.push_back(std::make_unique<std::string>(mnemonic));
     RetiredInstruction retired;
     retired.pc = pc;
@@ -52,6 +53,7 @@ public:
     retired.writes = writes;
     retired.wait = wait;
     retired.immediate = immediate;
+    retired.lds_destination = lds_destination;
     recorder_.instruction(workgroup, slot, retired, occupancy, latency, counter, 0);
   }
 
@@ -1235,10 +1237,11 @@ TEST(MeasuredSchedulerMemory, AWaitingLoadHoldsTheYoungerAccessesBehindIt) {
   EXPECT_DOUBLE_EQ(uncapped.schedule(memory).end, 308.0);
 }
 
-TEST(MeasuredScheduler, ASlotFreesWhenItsWaveCompletesThenTheNextWorkgroupLaunches180Later) {
-  // R9_SLOTEND, R9_LAUNCH. One slot. Workgroup 0 stores and ends; its store
+TEST(MeasuredScheduler, ASlotFreesWhenItsWaveCompletesThenTheNextWorkgroupLaunches100Later) {
+  // R9_SLOTEND, M2_RL_D0. One slot. Workgroup 0 stores and ends; its store
   // is acked at 290, so its slot frees then, and workgroup 1 (ten
-  // quarter-rate ops, 80 cycles) starts 180 cycles later.
+  // quarter-rate ops, 80 cycles) starts 100 cycles later (180 in the frozen
+  // v11 model, R9_LAUNCH).
   const auto end = [](bool release, double delay) {
     SchedulerTuning tuning;
     tuning.slot_release_at_completion = release;
@@ -1263,18 +1266,18 @@ TEST(MeasuredScheduler, ASlotFreesWhenItsWaveCompletesThenTheNextWorkgroupLaunch
   both.repeat(0, 0, "v_exp_f32_e32", InstClass::Transcendental, 10);
   both.repeat(1, 0, "v_exp_f32_e32", InstClass::Transcendental, 10);
   EXPECT_DOUBLE_EQ(both.run(/*resident=*/2).end, 80.0);
-  // The ALU-only serial case: the slot frees at 80, the second starts at 260.
+  // The ALU-only serial case: the slot frees at 80, the second starts at 180.
   Stream serial(tuning);
   serial.begin(0, 0);
   serial.begin(1, 0);
   serial.repeat(0, 0, "v_exp_f32_e32", InstClass::Transcendental, 10);
   serial.repeat(1, 0, "v_exp_f32_e32", InstClass::Transcendental, 10);
-  EXPECT_DOUBLE_EQ(serial.run(/*resident=*/1).end, 80.0 + 180.0 + 80.0);
+  EXPECT_DOUBLE_EQ(serial.run(/*resident=*/1).end, 80.0 + 100.0 + 80.0);
 }
 
 TEST(MeasuredScheduler, StaggeredWorkgroupsLaunchWhenTheirSlotsHaveCompleted) {
   // staggered_groups with the default launch rules: slot s frees when its
-  // wave completes, at 64 (s + 2), and a workgroup starts 180 after it fits.
+  // wave completes, at 64 (s + 2), and a workgroup starts 100 after it fits.
   // Under 8 the third workgroup fits when four waves of the first two have
   // completed (at 192); under 4 each one waits for the whole previous one
   // (320).
@@ -1284,8 +1287,8 @@ TEST(MeasuredScheduler, StaggeredWorkgroupsLaunchWhenTheirSlotsHaveCompleted) {
     return stream.run(resident).end;
   };
   EXPECT_DOUBLE_EQ(end(12), 320.0);
-  EXPECT_DOUBLE_EQ(end(8), 192.0 + 180.0 + 320.0);
-  EXPECT_DOUBLE_EQ(end(4), 3.0 * 320.0 + 2.0 * 180.0);
+  EXPECT_DOUBLE_EQ(end(8), 192.0 + 100.0 + 320.0);
+  EXPECT_DOUBLE_EQ(end(4), 3.0 * 320.0 + 2.0 * 100.0);
 }
 
 // -- Power-limited clock (kernel_eval5 EVAL_CLOCK=rule) ------------------------
@@ -1407,40 +1410,55 @@ SchedRule rule_of(const SchedulerTuning &tuning, const std::string &mnemonic, In
   return make_rule(tuning, mnemonic, cls, size, 0, {}, writes, Stream::unconstrained(), 0x100);
 }
 
-TEST(MeasuredSchedulerMerged, PermutesHoldTheLdsSixCyclesAndTheWave8Point3) {
-  // M_PERM. The emulator reports 1 cycle; both waves' permutes (on two SIMDs)
-  // share the CU's LDS: the second issues at 6 and holds its wave 8.3.
-  const auto end = [](SchedulerTuning tuning) {
+TEST(MeasuredSchedulerMerged, PermutesHoldTheWave8Point3) {
+  // M_PERM. The compute unit's LDS cost charges a permute its 6 cycles at the
+  // source (the record's occupancy); both waves' permutes (on two SIMDs) share
+  // the CU's LDS: the second issues at 6 and holds its wave 8.3. The scheduler
+  // no longer floors the occupancy: a record of 1 is 1.
+  const auto end = [](SchedulerTuning tuning, std::uint64_t occupancy) {
     Stream stream(tuning);
     stream.begin(0, 0);
     stream.begin(0, 1);
-    stream.add(0, 0, "ds_bpermute_b32", InstClass::LdsRead, 0x100, 8, 1);
-    stream.add(0, 1, "ds_bpermute_b32", InstClass::LdsRead, 0x100, 8, 1);
+    stream.add(0, 0, "ds_bpermute_b32", InstClass::LdsRead, 0x100, 8, occupancy);
+    stream.add(0, 1, "ds_bpermute_b32", InstClass::LdsRead, 0x100, 8, occupancy);
     return stream.run().end;
   };
-  EXPECT_DOUBLE_EQ(end(SchedulerTuning{}), 6.0 + 8.3);
+  EXPECT_DOUBLE_EQ(end(SchedulerTuning{}, 6), 6.0 + 8.3);
+  EXPECT_DOUBLE_EQ(end(SchedulerTuning{}, 1), 1.0 + 8.3);
   SchedulerTuning off;
   off.lds_permute_cycles = 0.0;
-  EXPECT_DOUBLE_EQ(end(off), 1.0 + 4.0);
+  EXPECT_DOUBLE_EQ(end(off, 1), 1.0 + 4.0);
 }
 
 TEST(MeasuredSchedulerMerged, ALoadToLdsAlsoTakesTheLdsOneCycle) {
-  // M_LDSDMA. buffer_load ... lds (no VGPR destination) issues at 0 and takes
-  // the LDS for a cycle; the other wave's ds_read waits for it.
-  const auto end = [](SchedulerTuning tuning, bool to_lds) {
+  // M_LDSDMA. A load the functional plane marks as writing LDS
+  // (VectorMemState::lds_dst) issues at 0 and takes the LDS for a cycle; the
+  // other wave's ds_read waits for it. An empty destination list alone (the
+  // replay's inference) no longer counts.
+  const auto end = [](SchedulerTuning tuning, bool to_lds, bool no_vgpr) {
     Stream stream(tuning);
     stream.begin(0, 0);
     stream.begin(0, 1);
     stream.add(0, 0, "buffer_load_dword", InstClass::VectorMemoryRead, 0x100, 8, 4, 0, 0xFF, 0, {},
-               to_lds ? RegisterRanges{} : vgpr(0));
+               no_vgpr ? RegisterRanges{} : vgpr(0), Stream::unconstrained(), 0, to_lds);
     stream.add(0, 1, "ds_read_b32", InstClass::LdsRead, 0x200, 8, 4);
     return stream.run().end;
   };
-  EXPECT_DOUBLE_EQ(end(SchedulerTuning{}, true), 1.0 + 4.0);
-  EXPECT_DOUBLE_EQ(end(SchedulerTuning{}, false), 4.0);
+  EXPECT_DOUBLE_EQ(end(SchedulerTuning{}, true, true), 1.0 + 4.0);
+  EXPECT_DOUBLE_EQ(end(SchedulerTuning{}, false, true), 4.0);
+  EXPECT_DOUBLE_EQ(end(SchedulerTuning{}, false, false), 4.0);
   SchedulerTuning off;
   off.lds_dma_cycles = 0.0;
-  EXPECT_DOUBLE_EQ(end(off, true), 4.0);
+  EXPECT_DOUBLE_EQ(end(off, true, true), 4.0);
+  // The flag is part of a pc's rule identity.
+  EXPECT_DOUBLE_EQ(make_rule(SchedulerTuning{}, "global_load_lds_dwordx4", InstClass::VectorMemoryRead, 8,
+                             0, {}, {}, Stream::unconstrained(), 0x100, true)
+                       .lds_dma,
+                   1.0);
+  EXPECT_DOUBLE_EQ(make_rule(SchedulerTuning{}, "global_load_dwordx4", InstClass::VectorMemoryRead, 8, 0,
+                             {}, {}, Stream::unconstrained(), 0x100, false)
+                       .lds_dma,
+                   0.0);
 }
 
 TEST(MeasuredSchedulerMerged, WideLdsReadsHoldTheWave4Point8And8Point2) {
@@ -1506,10 +1524,10 @@ TEST(MeasuredSchedulerMemory, AnL1HitTakesItsSiblingsMissLatency) {
 TEST(MeasuredScheduler, EachSimdHoldsAQuarterOfTheResidentWaves) {
   // M_SIMDSLOT, staggered_groups: under 8 each SIMD holds 2 and slot s of
   // both workgroups sits on SIMD s, so the third workgroup waits until slot 3
-  // completes (320), then 180 + its own 320.
+  // completes (320), then 100 + its own 320.
   Stream stream;
   staggered_groups(stream, 3);
-  EXPECT_DOUBLE_EQ(stream.run(8).end, 320.0 + 180.0 + 320.0);
+  EXPECT_DOUBLE_EQ(stream.run(8).end, 320.0 + 100.0 + 320.0);
   Stream twelve;
   staggered_groups(twelve, 3);
   EXPECT_DOUBLE_EQ(twelve.run(12).end, 320.0);
@@ -1616,6 +1634,142 @@ TEST(MeasuredScheduler, QueuedKernelTimeHasItsOwnHeadTailAndMinimum) {
   one.slowest_unit_cycles = 100.0;
   one.clock_mhz = 2000.0;
   EXPECT_DOUBLE_EQ(kernel_time(SchedulerTuning{}, one).total_us, 3.9);
+}
+
+// -- Device dispatcher (merge12 M2_DISP=busy, aiterfa/disp2) -------------------
+
+/// @brief CUs holding n workgroups, for every n > 0.
+std::map<std::uint64_t, std::uint64_t> histogram(const DispatchPlacement &placement) {
+  std::map<std::uint64_t, std::uint64_t> out;
+  for (const std::uint64_t count : placement.workgroups_per_cu)
+    if (count != 0)
+      ++out[count];
+  return out;
+}
+
+TEST(MeasuredSchedulerDispatch, AFullEngineHoldsItsXcdsQueue) {
+  // One XCD of two engines with two CUs each, one workgroup per CU, relaunch
+  // 5 cycles, issue gap 4. Workgroups 0-3 (100, 10, 100, 10 cycles) fill the
+  // four CUs at 0. Workgroup 4 goes to engine 0, whose CUs free at 100: it
+  // starts at 105 and holds the queue to 109. Workgroup 5 belongs to engine 1,
+  // free since 10, but waits behind it: 109 + 10.
+  SchedulerTuning tuning;
+  tuning.dispatch_shader_engines = 2;
+  tuning.dispatch_se_order = {0, 1};
+  tuning.dispatch_se_order_xcd0 = {};
+  const std::array<double, 6> duration = {100, 10, 100, 10, 10, 10};
+  const DispatchPlacement placement = simulate_dispatch(
+      tuning, 1, 4, 6, 1, 1, 5.0, [&](std::uint64_t group) { return duration[group]; });
+  EXPECT_DOUBLE_EQ(placement.end, 119.0);
+  EXPECT_EQ(placement.workgroups_per_cu, (std::vector<std::uint64_t>{2, 1, 1, 2}));
+  EXPECT_EQ(placement.busiest, 2u);
+}
+
+TEST(MeasuredSchedulerDispatch, MatchesTheReplaysDeviceSimulation) {
+  // disp_sim.sim_rr(G, cap, dur, W, 100, ramp=False) on 8 XCDs x 4 engines x
+  // 8 CUs; the measured engine orders relabel the engines only.
+  const auto jitter = [](std::uint64_t group) { return 20000.0 + static_cast<double>((group * 7919) % 10007); };
+  const SchedulerTuning measured;
+  SchedulerTuning in_order;
+  in_order.dispatch_se_order = {0, 1, 2, 3};
+  in_order.dispatch_se_order_xcd0 = {};
+  for (const SchedulerTuning &tuning : {measured, in_order}) {
+    const DispatchPlacement one = simulate_dispatch(tuning, 8, 256, 2048, 1, 2, 100.0, jitter);
+    EXPECT_DOUBLE_EQ(one.end, 219595.0);
+    EXPECT_EQ(histogram(one), (std::map<std::uint64_t, std::uint64_t>{{7, 14}, {8, 228}, {9, 14}}));
+    EXPECT_EQ(one.busiest, 9u);
+    const DispatchPlacement six = simulate_dispatch(tuning, 8, 256, 2048, 6, 2, 100.0, jitter);
+    EXPECT_DOUBLE_EQ(six.end, 53241.0);
+    EXPECT_EQ(histogram(six), (std::map<std::uint64_t, std::uint64_t>{{7, 42}, {8, 172}, {9, 42}}));
+    const DispatchPlacement even =
+        simulate_dispatch(tuning, 8, 256, 2048, 6, 2, 100.0, [](std::uint64_t) { return 25000.0; });
+    EXPECT_DOUBLE_EQ(even.end, 50104.0);
+    EXPECT_EQ(histogram(even), (std::map<std::uint64_t, std::uint64_t>{{8, 256}}));
+    // Sixteen-wave workgroups hold the queue 16 cycles per relaunch.
+    const DispatchPlacement wide = simulate_dispatch(
+        tuning, 8, 256, 4096, 2, 16, 100.0,
+        [](std::uint64_t group) { return 1000.5 + static_cast<double>((group * 131) % 977); });
+    EXPECT_DOUBLE_EQ(wide.end, 13854.0);
+    EXPECT_EQ(histogram(wide),
+              (std::map<std::uint64_t, std::uint64_t>{{14, 3}, {15, 50}, {16, 150}, {17, 50}, {18, 3}}));
+    const DispatchPlacement partial = simulate_dispatch(
+        tuning, 8, 256, 300, 1, 4, 100.0, [](std::uint64_t group) { return 5000.0 + static_cast<double>(group); });
+    EXPECT_DOUBLE_EQ(partial.end, 10406.0);
+    EXPECT_EQ(histogram(partial), (std::map<std::uint64_t, std::uint64_t>{{1, 212}, {2, 44}}));
+  }
+}
+
+/// @brief Plane: one XCD, one engine of four CUs, one one-wave workgroup per
+///        CU. Workgroup 0 runs @p long_nops `s_nop 15`, the others 4; eight
+///        workgroups fold w -> unit w % 4.
+std::uint64_t run_uneven(const std::string &rule, std::uint32_t long_nops) {
+  static const std::string mnemonic = "s_nop";
+  std::string config = plane_config(R"(, "scheduler.enabled": true, "scheduler.kernel.enabled": false,
+      "scheduler.power.enabled": false, "scheduler.dispatch.shader_engines": 1,
+      "scheduler.dispatch.rule": ")" + rule + "\"");
+  const std::string from = R"("wave_slots_per_cu": 8)";
+  config.replace(config.find(from), from.size(), R"("wave_slots_per_cu": 1)");
+  TimingPlane plane{Tuning::parse(config)};
+  DispatchShape shape = plane_shape(8);
+  plane.dispatch_begin(shape);
+  const std::uint64_t before = plane.current_cycles();
+  for (std::uint32_t wg = 0; wg < 8; ++wg) {
+    plane.wave_begin(wg, 0, shape.dispatch_id, shape.queue_id);
+    const std::uint32_t nops = wg == 0 ? long_nops : 4;
+    for (std::uint32_t index = 0; index < nops; ++index) {
+      RetiredInstruction nop = plane_alu(0x1000 + 4 * index, &mnemonic);
+      nop.inst_class = InstClass::Nop;
+      nop.immediate = 15;
+      plane.instruction(wg, 0, nop);
+    }
+    plane.wave_end(wg, 0);
+  }
+  plane.dispatch_end(shape.dispatch_id, shape.queue_id);
+  return plane.current_cycles() - before;
+}
+
+TEST(MeasuredSchedulerDispatch, TheBusiestCuSetsTheEndWhenItHoldsMoreThanTheSlowestUnit) {
+  // Unit 0 holds workgroups 0 (long) and 4; the dispatcher instead gives
+  // workgroup 0's CU nothing more and spreads 4..7 over the three short CUs,
+  // one of which takes three workgroups. The slowest unit is then scheduled
+  // again with a third workgroup (a copy of 4): one more relaunch (100), the
+  // 40-cycle instruction fetch workgroup 4's wave exposed (an L2 hit here),
+  // and 4 x 64 cycles. With a short workgroup 0 every CU takes two: no change.
+  const std::uint64_t even = run_uneven("even", 40);
+  const std::uint64_t busy = run_uneven("busy", 40);
+  EXPECT_EQ(even, 3316u);
+  EXPECT_EQ(busy, even + 100u + 40u + 256u);
+  EXPECT_EQ(run_uneven("busy", 4), run_uneven("even", 4));
+}
+
+TEST(MeasuredSchedulerSource, APermuteCostsTheMeasuredSixCyclesOfLds) {
+  // The compute unit's own LDS cost: ds_bpermute_b32 reports no addresses
+  // and used to fall into the "no lane took part" branch (1 cycle). With the
+  // scheduler on it is charged scheduler.lds.permute_cycles, and its result
+  // is ready LDS latency + 6 later.
+  static const std::string mnemonic = "ds_bpermute_b32";
+  const auto record = [](const std::string &extra) {
+    TimingPlane plane{Tuning::parse(plane_config(
+        R"(, "scheduler.enabled": true, "lds.latency_cycles": 51, "lds.measured_banks": true)" + extra))};
+    DispatchShape shape = plane_shape(1);
+    plane.dispatch_begin(shape);
+    plane.wave_begin(0, 0, shape.dispatch_id, shape.queue_id);
+    static const std::vector<std::uint64_t> none;
+    RetiredInstruction permute = plane_alu(0x1000, &mnemonic);
+    permute.inst_class = InstClass::LdsRead;
+    permute.space = MemorySpace::LocalDataShare;
+    permute.lane_addresses = &none;
+    permute.addresses_known = true;
+    plane.instruction(0, 0, permute);
+    return plane.compute_unit(0).recorder()->waves().front().records.front();
+  };
+  const SchedRecord measured = record("");
+  EXPECT_EQ(measured.occupancy, 6u);
+  EXPECT_EQ(measured.latency, 51u + 6u);
+  // Rule off: the plane's own permute cost (lds.granule_bytes unset: 1).
+  const SchedRecord off = record(R"(, "scheduler.lds.permute_cycles": 0)");
+  EXPECT_EQ(off.occupancy, 1u);
+  EXPECT_EQ(off.latency, 51u + 1u);
 }
 
 } // namespace

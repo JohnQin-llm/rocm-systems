@@ -465,6 +465,27 @@ Tuning Tuning::parse(const std::string &config_json) {
       s.simd_slots = read.measured_flag("scheduler.launch.simd_slots", d.simd_slots);
       s.slot_release_at_completion = read.measured_flag("scheduler.launch.slot_release_at_completion", d.slot_release_at_completion);
       s.workgroup_launch_cycles = read.measured("scheduler.launch.workgroup_cycles", d.workgroup_launch_cycles);
+      {
+        const std::string rule = read.choice("scheduler.dispatch.rule", "busy");
+        if (rule != "busy" && rule != "even")
+          util::Logger::warn("timing: machine.scheduler.dispatch.rule '" + rule +
+                             "' is not busy or even; using busy");
+        s.dispatch_busy = rule != "even";
+      }
+      s.dispatch_shader_engines = static_cast<std::uint64_t>(read.measured("scheduler.dispatch.shader_engines", static_cast<double>(d.dispatch_shader_engines)));
+      const auto engine_order = [&](std::string_view key, const std::vector<std::uint64_t> &fallback) {
+        std::vector<std::string> names;
+        for (const std::uint64_t engine : fallback)
+          names.push_back(std::to_string(engine));
+        std::vector<std::uint64_t> order;
+        for (const std::string &name : read.names(key, names))
+          order.push_back(static_cast<std::uint64_t>(std::strtoull(name.c_str(), nullptr, 10)));
+        return order;
+      };
+      s.dispatch_se_order = engine_order("scheduler.dispatch.se_order", d.dispatch_se_order);
+      s.dispatch_se_order_xcd0 = engine_order("scheduler.dispatch.se_order_xcd0", d.dispatch_se_order_xcd0);
+      s.dispatch_issue_cycles = read.measured("scheduler.dispatch.issue_cycles", d.dispatch_issue_cycles);
+      s.dispatch_issue_cycles_per_wave = read.measured("scheduler.dispatch.issue_cycles_per_wave", d.dispatch_issue_cycles_per_wave);
       s.spin_collapse = read.measured_flag("scheduler.spin.collapse", d.spin_collapse);
       s.spin_min_iterations = static_cast<std::uint64_t>(read.measured("scheduler.spin.min_iterations", static_cast<double>(d.spin_min_iterations)));
       s.spin_poll_cycles = read.measured("scheduler.spin.poll_cycles", d.spin_poll_cycles);

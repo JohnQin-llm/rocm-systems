@@ -44,6 +44,8 @@
 
 namespace rocjitsu::timing {
 
+struct WorkgroupSpan;
+
 /// @brief Running byte accounting for one level of the hierarchy, per instance.
 ///
 /// @details Instances are memory channels for the fabric, the memory-side cache
@@ -248,6 +250,14 @@ public:
     ///        and units whose memory queue the saturated-device rule set.
     std::uint64_t occupancy = 0;
     std::uint64_t saturated_units = 0;
+    /// @brief Measured scheduler, device dispatcher (scheduler.dispatch.rule
+    ///        busy): the most workgroups the simulated dispatcher gave one CU,
+    ///        the workgroups the slowest scheduled unit held, and that unit's
+    ///        end when scheduled again with the busiest count (cycles, rounded
+    ///        up; zero when it did not apply).
+    std::uint64_t dispatch_busiest = 0;
+    std::uint64_t dispatch_unit_workgroups = 0;
+    std::uint64_t dispatch_busy_end = 0;
     std::uint64_t kernel_head = 0;
     std::uint64_t kernel_stagger = 0;
     std::uint64_t kernel_ramp = 0;
@@ -288,8 +298,14 @@ public:
 
 private:
   /// @brief Run the measured scheduler on every unit, concurrently (see
-  ///        ROCJITSU_TIMING_SCHEDULER_THREADS), and apply the results in unit order.
-  void schedule_units(const DispatchMemory *memory);
+  ///        ROCJITSU_TIMING_SCHEDULER_THREADS), and apply the results in unit
+  ///        order. The units keep their buffered streams; @p spans receives
+  ///        every scheduled workgroup's residence.
+  void schedule_units(const DispatchMemory *memory, std::vector<WorkgroupSpan> &spans);
+  /// @brief The device dispatcher's busy rule (SchedulerTuning::dispatch_busy).
+  /// @returns The re-scheduled unit's end, or a negative value when the rule
+  ///          did not apply.
+  double busy_dispatch(const DispatchMemory *memory, const std::vector<WorkgroupSpan> &spans);
 
   const Tuning &tuning_;
   std::vector<ComputeUnitDes *> units_;

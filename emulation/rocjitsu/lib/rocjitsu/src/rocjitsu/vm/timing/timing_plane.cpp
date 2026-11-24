@@ -192,6 +192,9 @@ void TimingPlane::trace_dispatch(const DispatchDes &dispatch) {
     number("spin_units", static_cast<unsigned long long>(terms.spin_units));
     number("occupancy", static_cast<unsigned long long>(terms.occupancy));
     number("saturated_units", static_cast<unsigned long long>(terms.saturated_units));
+    number("dispatch_busiest", static_cast<unsigned long long>(terms.dispatch_busiest));
+    number("dispatch_unit_workgroups", static_cast<unsigned long long>(terms.dispatch_unit_workgroups));
+    number("dispatch_busy_end", static_cast<unsigned long long>(terms.dispatch_busy_end));
     number("kernel_head", static_cast<unsigned long long>(terms.kernel_head));
     number("kernel_stagger", static_cast<unsigned long long>(terms.kernel_stagger));
     number("kernel_ramp", static_cast<unsigned long long>(terms.kernel_ramp));

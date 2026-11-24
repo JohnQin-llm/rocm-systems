@@ -97,9 +97,11 @@ double wave_bytes(const std::string &mnemonic) {
 SchedRule make_rule(const SchedulerTuning &tuning, const std::string &raw_mnemonic,
                     InstClass inst_class, std::uint8_t size_bytes, std::uint16_t immediate,
                     const RegisterRanges &reads, const RegisterRanges &writes,
-                    const std::array<std::uint32_t, kNumWaitCounters> &wait, std::uint64_t pc) {
+                    const std::array<std::uint32_t, kNumWaitCounters> &wait, std::uint64_t pc,
+                    bool lds_destination) {
   SchedRule rule;
   rule.pc = pc;
+  rule.lds_destination = lds_destination;
   rule.mnemonic = raw_mnemonic;
   rule.immediate = immediate;
   rule.inst_class = inst_class;
@@ -199,12 +201,12 @@ SchedRule make_rule(const SchedulerTuning &tuning, const std::string &raw_mnemon
       else if (tuning.lds_read_b128_wave_cycles > 0.0 && mnemonic.rfind("ds_read_b128", 0) == 0)
         hold = std::max(hold, tuning.lds_read_b128_wave_cycles);
     }
-    // replay11 M_PERM: cross-lane permutes occupy the LDS at least 6 cycles.
+    // replay11 M_PERM: a cross-lane permute holds its wave 8.3 cycles. Its 6
+    // cycles of LDS come with the record: the compute unit's LDS cost
+    // charges them at the source (cu_des.cpp lds_access).
     if (tuning.lds_permute_cycles > 0.0 &&
-        (mnemonic == "ds_bpermute_b32" || mnemonic == "ds_permute_b32" || mnemonic == "ds_swizzle_b32")) {
-      rule.occupancy_floor = std::max(rule.occupancy_floor, tuning.lds_permute_cycles);
+        (mnemonic == "ds_bpermute_b32" || mnemonic == "ds_permute_b32" || mnemonic == "ds_swizzle_b32"))
       hold = std::max(hold, tuning.lds_permute_wave_cycles);
-    }
     rule.pipe = SchedPipe::Lds;
     rule.occupancy_dynamic = true;
     rule.interval = hold;
@@ -238,9 +240,10 @@ SchedRule make_rule(const SchedulerTuning &tuning, const std::string &raw_mnemon
             wave_bytes(mnemonic) / std::max(1e-9, tuning.vmem_address_bytes_per_cycle);
       }
     }
-    // replay11 M_LDSDMA: a load to LDS (no VGPR destination) also takes the LDS.
-    if (tuning.lds_dma_cycles > 0.0 && inst_class == InstClass::VectorMemoryRead && writes.empty() &&
-        (mnemonic.rfind("buffer_load", 0) == 0 || mnemonic.rfind("global_load", 0) == 0))
+    // replay11 M_LDSDMA: a load to LDS also takes the LDS. The functional
+    // plane says so (VectorMemState::lds_dst); the replay could only infer it
+    // from a buffer/global load with no VGPR destination.
+    if (tuning.lds_dma_cycles > 0.0 && inst_class == InstClass::VectorMemoryRead && lds_destination)
       rule.lds_dma = tuning.lds_dma_cycles;
     break;
   }
@@ -460,6 +463,19 @@ public:
       result.wave_cycles += wave.end - wave.start;
       result.wave_ends.push_back(wave.end);
       ++result.waves;
+    }
+    // Groups launch in workgroup-id order and members_ follows launch order.
+    result.workgroup_spans.reserve(members_.size());
+    for (const std::vector<std::size_t> &group : members_) {
+      WorkgroupSpan span;
+      span.workgroup = live_[group.front()].in->workgroup;
+      span.start = live_[group.front()].start;
+      span.end = live_[group.front()].end;
+      for (const std::size_t index : group) {
+        span.start = std::min(span.start, live_[index].start);
+        span.end = std::max(span.end, live_[index].end);
+      }
+      result.workgroup_spans.push_back(span);
     }
     result.far_read_bytes = far_read_;
     result.far_write_bytes = far_write_;
@@ -1092,6 +1108,86 @@ ScheduleResult schedule_compute_unit(const SchedulerTuning &tuning, std::span<co
   return scheduler.run();
 }
 
+DispatchPlacement simulate_dispatch(const SchedulerTuning &tuning, std::uint64_t xcds,
+                                    std::uint64_t compute_units, std::uint64_t workgroups,
+                                    std::uint64_t cap, std::uint64_t waves_per_workgroup,
+                                    double launch,
+                                    const std::function<double(std::uint64_t)> &duration) {
+  // disp_sim.sim_rr(G, cap, dur, wpg, launch, ramp=False), step for step.
+  const std::uint64_t dies = std::max<std::uint64_t>(1, xcds);
+  const std::uint64_t engines = std::max<std::uint64_t>(1, tuning.dispatch_shader_engines);
+  const std::uint64_t cus = std::max<std::uint64_t>(1, compute_units / dies / engines);
+  const std::size_t slots = static_cast<std::size_t>(std::max<std::uint64_t>(1, cap));
+  const double gap = std::max(tuning.dispatch_issue_cycles,
+                              tuning.dispatch_issue_cycles_per_wave *
+                                  static_cast<double>(std::max<std::uint64_t>(1, waves_per_workgroup)));
+  const auto engine_order = [&](std::uint64_t xcd) {
+    const std::vector<std::uint64_t> &order =
+        xcd == 0 && !tuning.dispatch_se_order_xcd0.empty() ? tuning.dispatch_se_order_xcd0
+                                                            : tuning.dispatch_se_order;
+    std::vector<std::uint64_t> out;
+    for (const std::uint64_t engine : order)
+      if (engine < engines && std::find(out.begin(), out.end(), engine) == out.end())
+        out.push_back(engine);
+    for (std::uint64_t engine = 0; engine < engines; ++engine) // a short or bad list: the rest in order
+      if (std::find(out.begin(), out.end(), engine) == out.end())
+        out.push_back(engine);
+    return out;
+  };
+  DispatchPlacement placement;
+  placement.workgroups_per_cu.assign(static_cast<std::size_t>(dies * engines * cus), 0);
+  for (std::uint64_t xcd = 0; xcd < dies; ++xcd) {
+    const std::vector<std::uint64_t> order = engine_order(xcd);
+    // Per CU: end cycles of the dispatch's workgroups resident there, ascending.
+    std::vector<std::vector<double>> live(static_cast<std::size_t>(engines * cus));
+    std::vector<double> cu_end(static_cast<std::size_t>(engines * cus), 0.0);
+    std::vector<std::uint64_t> pointer(static_cast<std::size_t>(engines));
+    for (std::uint64_t engine = 0; engine < engines; ++engine)
+      pointer[engine] = engine % cus;
+    std::vector<double> room(static_cast<std::size_t>(cus));
+    double queue = 0.0; // when the XCD's in-order queue can place its next workgroup
+    std::uint64_t k = 0;
+    for (std::uint64_t group = xcd; group < workgroups; group += dies, ++k) {
+      const std::uint64_t engine = order[k % engines];
+      double at = std::numeric_limits<double>::infinity();
+      for (std::uint64_t cu = 0; cu < cus; ++cu) {
+        std::vector<double> &ends = live[engine * cus + cu];
+        // Slots that freed before the queue reached this workgroup are free.
+        std::size_t freed = 0;
+        while (freed < ends.size() && ends[freed] <= queue)
+          ++freed;
+        ends.erase(ends.begin(), ends.begin() + static_cast<std::ptrdiff_t>(freed));
+        room[cu] = ends.size() < slots ? queue : ends[ends.size() - slots] + launch;
+        at = std::min(at, room[cu]);
+      }
+      at = std::max(at, queue);
+      std::uint64_t chosen = pointer[engine];
+      for (std::uint64_t step = 0; step < cus; ++step) {
+        chosen = (pointer[engine] + step) % cus;
+        if (room[chosen] <= at)
+          break;
+      }
+      pointer[engine] = (chosen + 1) % cus;
+      std::vector<double> &ends = live[engine * cus + chosen];
+      const bool relaunch = ends.size() >= slots;
+      if (relaunch)
+        ends.erase(ends.begin(), ends.begin() + static_cast<std::ptrdiff_t>(ends.size() - slots + 1));
+      const double end = at + duration(group);
+      ends.insert(std::upper_bound(ends.begin(), ends.end(), end), end);
+      double &unit_end = cu_end[engine * cus + chosen];
+      unit_end = std::max(unit_end, end);
+      std::uint64_t &count =
+          placement.workgroups_per_cu[static_cast<std::size_t>((xcd * engines + engine) * cus + chosen)];
+      ++count;
+      placement.busiest = std::max(placement.busiest, count);
+      queue = at + (relaunch ? gap : 0.0);
+    }
+    for (const double end : cu_end)
+      placement.end = std::max(placement.end, end);
+  }
+  return placement;
+}
+
 double share_divisor(const SchedulerTuning &tuning, double active_cus, std::uint64_t workgroups,
                      std::uint64_t workgroups_on_unit) {
   if (!tuning.memory_demand_share)
@@ -1107,7 +1203,14 @@ ScheduleResult schedule_compute_unit(const SchedulerTuning &tuning, std::span<co
                                      const DispatchMemory &memory) {
   ScheduleMemory schedule;
   schedule.pcs = memory.pcs;
-  ScheduleResult first = schedule_compute_unit(tuning, rules, waves, resident, schedule);
+  // istream_replay12 LAST_SPANS: the workgroup spans of whichever pass ran last.
+  std::vector<WorkgroupSpan> last_spans;
+  const auto pass = [&]() {
+    ScheduleResult out = schedule_compute_unit(tuning, rules, waves, resident, schedule);
+    last_spans = out.workgroup_spans;
+    return out;
+  };
+  ScheduleResult first = pass();
   if (memory.pcs == nullptr || !tuning.memory_queue || first.end <= 0.0)
     return first;
   // Pass 1 measured the unit's demand; its utilisation of the device is what
@@ -1128,11 +1231,12 @@ ScheduleResult schedule_compute_unit(const SchedulerTuning &tuning, std::span<co
     result.memory_utilisation = utilisation;
     result.memory_device_cycles = busy;
     result.memory_saturation_scale = scale;
+    result.workgroup_spans = std::move(last_spans);
     return result;
   };
   if (utilisation < 1.0 || !tuning.memory_saturated_device) {
     schedule.scale = utilisation < 1.0 ? utilisation : -1.0;
-    return finish(schedule_compute_unit(tuning, rules, waves, resident, schedule), -1.0);
+    return finish(pass(), -1.0);
   }
   // Saturated device (istream_replay7b R7B_SAT): the device is busy for
   // longer than this unit runs without queueing, so the other units fill its
@@ -1140,14 +1244,14 @@ ScheduleResult schedule_compute_unit(const SchedulerTuning &tuning, std::span<co
   // share. Bisect the service scale so that the queued end meets the busy
   // time; keep the run at the smallest scale that still ends after it.
   schedule.scale = 1.0;
-  ScheduleResult best = schedule_compute_unit(tuning, rules, waves, resident, schedule);
+  ScheduleResult best = pass();
   if (best.end <= busy)
     return finish(std::move(best), 1.0);
   double low = 0.0;
   double high = 1.0;
   for (std::uint64_t step = 0; step < tuning.memory_saturated_iterations; ++step) {
     schedule.scale = 0.5 * (low + high);
-    ScheduleResult probe = schedule_compute_unit(tuning, rules, waves, resident, schedule);
+    ScheduleResult probe = pass();
     if (probe.end > busy) {
       high = schedule.scale;
       best = std::move(probe);
@@ -1494,13 +1598,14 @@ std::uint32_t ScheduleRecorder::rule_for(const RetiredInstruction &retired) {
     const SchedRule &rule = rules_[found->second];
     if (rule.inst_class == retired.inst_class && rule.size_bytes == retired.size_bytes &&
         rule.immediate == retired.immediate && rule.mnemonic == mnemonic &&
+        rule.lds_destination == retired.lds_destination &&
         (rule.inst_class != InstClass::WaitCounter || rule.wait_thresholds == retired.wait))
       return found->second;
   }
   const std::uint32_t index = static_cast<std::uint32_t>(rules_.size());
   rules_.push_back(make_rule(tuning_, mnemonic, retired.inst_class, retired.size_bytes,
                              retired.immediate, retired.reads, retired.writes, retired.wait,
-                             retired.pc));
+                             retired.pc, retired.lds_destination));
   rule_index_[retired.pc] = index;
   return index;
 }
@@ -1523,10 +1628,13 @@ void ScheduleRecorder::instruction(std::uint32_t workgroup, std::uint32_t slot,
   wave.records.push_back(record);
 }
 
+ScheduleResult ScheduleRecorder::schedule(std::uint64_t resident, const DispatchMemory *memory) const {
+  return memory != nullptr ? schedule_compute_unit(tuning_, rules_, waves_, resident, *memory)
+                           : schedule_compute_unit(tuning_, rules_, waves_, resident, ScheduleMemory{});
+}
+
 ScheduleResult ScheduleRecorder::run(std::uint64_t resident, const DispatchMemory *memory) {
-  ScheduleResult result = memory != nullptr
-                              ? schedule_compute_unit(tuning_, rules_, waves_, resident, *memory)
-                              : schedule_compute_unit(tuning_, rules_, waves_, resident, ScheduleMemory{});
+  ScheduleResult result = schedule(resident, memory);
   clear();
   return result;
 }
