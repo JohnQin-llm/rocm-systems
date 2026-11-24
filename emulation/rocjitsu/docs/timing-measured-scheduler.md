@@ -97,7 +97,8 @@ Per wavefront the scheduler tracks:
 
 **Placement.** Each SIMD has a quarter of the CU's wave slots. A workgroup's wavefronts are spread
 evenly over the SIMDs, and the workgroup launches when those SIMDs have room. Workgroup *i* runs on XCD *i* mod 8; within an XCD, workgroups go round-robin
-over shader engines and then CUs, so *i* and *i* + 256 share a CU.
+over shader engines and then CUs, so *i* and *i* + 256 share a CU. The C++ port also simulates the measured
+device dispatcher over all CUs ([§7.4](#74-c-port), `scheduler.dispatch.rule`).
 
 ### 3.2 One scheduling step
 
@@ -171,8 +172,8 @@ Wave hold: writes ≈ bytes/40 (*trace*: 1 KiB writes cost 25–31 cycles in thr
 
 | Other LDS traffic | Cost |
 | --- | --- |
-| `ds_bpermute_b32` / `ds_permute_b32` | 6 cycles of the CU's LDS; holds the wave 8.3 cycles |
-| LDS-DMA load (`buffer_load … lds`, no VGPR destination) | 1 cycle of the CU's LDS, on top of its vector-memory cost |
+| `ds_bpermute_b32` / `ds_permute_b32` / `ds_swizzle_b32` | 6 cycles of the CU's LDS; holds the wave 8.3 cycles |
+| LDS-DMA load (`buffer_load … lds`, payload to LDS) | 1 cycle of the CU's LDS, on top of its vector-memory cost |
 | Issue interval of back-to-back reads | 4.8 cycles for 8-byte (`ds_read_b64*`), 8.2 for `ds_read_b128` |
 
 ### 4.5 Vector memory
@@ -212,7 +213,7 @@ set = table[v],  table = 0,2,1,0,3,1,2,0, 1,3,0,1,2,0,3,1, 2,0,3,0,1,3,0,2, 3,1,
 | Rule | Value |
 | --- | --- |
 | Occupancy (waves per CU) | min(32, 4·⌊512 / VGPRs⌋, ⌊3200 / SGPRs⌋, ⌊160 KiB / LDS⌋ · waves per workgroup), rounded down to whole workgroups |
-| Slot release and relaunch (*trace*) | A wave's slot frees when its stores complete; the next workgroup launches ≈180 cycles later. |
+| Slot release and relaunch (*trace*) | A wave's slot frees when its stores complete (acknowledged); the next workgroup's first wave starts ≈100 cycles later (relaunch thread traces and the dispatcher microbenchmark's store-ack split; the frozen model used 180). |
 | Saturated device | When device memory demand saturates bandwidth, a CU ends at the device time: other CUs use the bandwidth it leaves idle. |
 | Sustained clock | 2383–2400 MHz on 91 of 95 development kernels; three dense fp8 GEMMs (1922–2260 MHz) and one bf16 matmul (2142 MHz) throttle. |
 | Power-limited clock | f = 2400 MHz · √(*C* / *D*) when *D* > *C*, where *D* is the XCD dynamic power from measured per-operation energies: fp8 32×32×64 MFMA 27.6 nJ, bf16 32×32×16 MFMA 16.3 nJ, LDS 6.4 pJ/B, L2 19 pJ/B, HBM ≈25 pJ/B (at the XCD). |
@@ -424,7 +425,8 @@ rule is a `scheduler.*` key whose default is the measured value, with its source
 | Beyond-L2 rescaling, demand bandwidth share | ported |
 | Occupancy limit, saturated device | ported |
 | Slowest-line load completion | ported |
-| Slot release at store completion, 180-cycle relaunch | ported |
+| Slot release at store completion, relaunch 100 cycles after the acknowledgement (was 180) | ported |
+| Device dispatcher (`busy`, merge12 `M2_DISP=busy`) | ported; `scheduler.dispatch.rule` = `busy` (default) or `even` |
 | Outstanding-request cap (≈118 per CU), L2 read bandwidth | ported |
 | Power-limited clock | ported |
 | Rules of [§4.8](#48-rules-added-for-the-frozen-model) | ported |
@@ -485,10 +487,14 @@ fold several workgroups onto one CU. The shipped composition's queued error goes
 - Write-back uses the L2's dirty bytes at release.
 - Per-pc means, the energy mix and spin partners are taken over all modelled CUs.
 - The ramp's first round uses the occupancy limit.
-- A load to LDS is recognised by its empty destination list, as in the replay. The emulator's
-  `lds_dst` flag is not plumbed into `RetiredInstruction`.
-- The emulator's own LDS cost of a permute (1 cycle, from the `touched_nothing` branch) is unchanged;
-  the permute rule replaces it. Moving the permute branch first would change the shipped composition.
+- A load to LDS is recognised by the emulator's `lds_dst` flag (`RetiredInstruction::lds_destination`),
+  not, as in the replay, by an empty destination list.
+- A permute's 6 LDS cycles are charged at the source: the compute unit's LDS cost tests for a
+  permute before the "no lane took part" branch, so the record carries 6 and the result is ready
+  LDS latency + 6 later; the scheduler keeps only the 8.3-cycle wave hold. With the scheduler off
+  the same reordering gives permutes the plane's own permute cost (1 cycle on MI355X configs,
+  latency + 1) instead of the 1-cycle no-lane cost.
+- The dispatcher has no sampling gate: every CU is scheduled, so every workgroup's residence is known.
 
 Still open: multi-kernel calls ([§5.4](#54-multi-kernel-library-calls)) are timed per dispatch, and
 `R7B_DEV=max` is not ported. On the largest development kernel (swiglu `sw16384x1408`) the scheduler
