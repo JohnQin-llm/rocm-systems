@@ -14,6 +14,8 @@
 
 #include <algorithm>
 #include <bit>
+#include <cstdio>
+#include <cstdlib>
 #include <format>
 #include <string_view>
 #include <utility>
@@ -302,12 +304,28 @@ bool fill_memory(const Instruction &inst, const amdgpu::Wavefront &wf, Collected
 
 // -- Construction ------------------------------------------------------------
 
-TimingCollector::TimingCollector(TimingPlane &plane) : plane_(plane), enabled_(plane.enabled()) {}
+TimingCollector::TimingCollector(TimingPlane &plane) : plane_(plane), enabled_(plane.enabled()) {
+  if (!plane.enabled())
+    return;
+  // ROCJITSU_TIMING_START=<kernel-name prefix>: the plane stays inert -- no
+  // dispatch, wavefront, trace line or istream record -- until the first
+  // dispatch packet whose kernel name starts with the prefix. While it is
+  // inert its clock does not advance, so guest-visible GPU time (event elapsed
+  // times, signal timestamps, s_memtime) reads zero.
+  if (const char *start = std::getenv("ROCJITSU_TIMING_START"); start != nullptr && *start != '\0') {
+    gated_ = true;
+    start_prefix_ = start;
+    enabled_.store(false);
+  }
+  sampling_ = plane.sampling().enabled;
+}
 
 TimingCollector::~TimingCollector() = default;
 
 void TimingCollector::attach(amdgpu::Wavefront &wf) {
-  wf.set_plugin_state(kWavefrontStateSlot, std::make_unique<CollectedWave>());
+  auto state = std::make_unique<CollectedWave>();
+  state->timed = !gated_;
+  wf.set_plugin_state(kWavefrontStateSlot, std::move(state));
 }
 
 CollectedWave *TimingCollector::wave_state(const amdgpu::Wavefront &wf) const {
@@ -335,6 +353,8 @@ const StaticInstruction &TimingCollector::static_info(std::uint64_t pc, const In
     append_operand(inst.src_operand(index), entry->reads);
   for (int index = 0; index < inst.num_dst_operands(); ++index)
     append_operand(inst.dst_operand(index), entry->writes);
+  entry->denies_sampling =
+      sampling_ && plane_.sampling_denies(entry->mnemonic, !entry->writes.empty());
 
   std::unique_lock<std::shared_mutex> guard(info_mutex_);
   std::unique_ptr<StaticInstruction> &slot = info_cache_[pc];
@@ -357,8 +377,28 @@ const StaticInstruction &TimingCollector::static_info(std::uint64_t pc, const In
 // -- Dispatches --------------------------------------------------------------
 
 void TimingCollector::dispatch_packet(const rocjitsu::KernelDispatchInfo &info) {
-  if (!enabled_)
-    return;
+  if (!enabled_) {
+    if (!gated_)
+      return;
+    const std::string name =
+        info.kernel_name.empty() ? unnamed_kernel_identity(info) : info.kernel_name;
+    if (!std::string_view(name).starts_with(start_prefix_)) {
+      // Remembered so that its wavefronts stay untimed even when they launch
+      // after timing has started.
+      std::lock_guard<std::mutex> guard(dispatch_mutex_);
+      untimed_.insert(packed(info.dispatch_id, info.queue_id));
+      return;
+    }
+    // The start kernel. Timing begins here, at a dispatch boundary: this
+    // dispatch is the first the plane sees, and the plane has not been called
+    // before, so nothing in it is half open.
+    enabled_.store(true);
+  }
+  if (gated_) {
+    // A dispatch id can come back once its earlier use has retired.
+    std::lock_guard<std::mutex> guard(dispatch_mutex_);
+    untimed_.erase(packed(info.dispatch_id, info.queue_id));
+  }
 
   DispatchShape shape;
   shape.dispatch_id = info.dispatch_id;
@@ -450,12 +490,28 @@ void TimingCollector::dispatch_execution_end(std::uint32_t dispatch_id) {
 // -- Wavefronts --------------------------------------------------------------
 
 void TimingCollector::wave_dispatched(amdgpu::Wavefront &wf) {
-  if (!enabled_)
+  if (!enabled_) {
+    if (gated_)
+      mark_untimed(wf);
     return;
+  }
   CollectedWave *wave = wave_state(wf);
   if (wave == nullptr) {
     attach(wf);
     wave = wave_state(wf);
+  }
+  if (gated_) {
+    bool untimed = false;
+    {
+      std::lock_guard<std::mutex> guard(dispatch_mutex_);
+      untimed = untimed_.count(packed(wf.dispatch_id(), wf.queue_id())) != 0;
+    }
+    wave->timed = !untimed;
+    if (untimed) {
+      wave->has_pending = false;
+      wave->pending_info = nullptr;
+      return;
+    }
   }
 
   // Round-robin by workgroup, which is how a shader-processor input spreads
@@ -483,7 +539,7 @@ void TimingCollector::wave_halted(amdgpu::Wavefront &wf) {
   if (!enabled_)
     return;
   CollectedWave *wave = wave_state(wf);
-  if (wave == nullptr)
+  if (wave == nullptr || (gated_ && !wave->timed))
     return;
 
   // The instruction that terminated the wavefront never reaches the after hook:
@@ -510,7 +566,7 @@ void TimingCollector::barrier_resolved(std::span<amdgpu::Wavefront *> waves) {
   for (amdgpu::Wavefront *wf : waves) {
     if (wf == nullptr)
       continue;
-    if (const CollectedWave *wave = wave_state(*wf))
+    if (const CollectedWave *wave = wave_state(*wf); wave != nullptr && (!gated_ || wave->timed))
       members.emplace_back(wave->compute_unit, wave->wave_slot);
   }
   if (members.empty())
@@ -535,10 +591,14 @@ void TimingCollector::barrier_resolved(std::span<amdgpu::Wavefront *> waves) {
 
 void TimingCollector::before_execute(std::uint64_t pc, const Instruction &inst,
                                      amdgpu::Wavefront &wf) {
+  if (sampling_) [[unlikely]] {
+    if (const CollectedWave *sampled = wave_state(wf); sampled != nullptr && sampled->sampled)
+      check_sampled(pc, inst, wf);
+  }
   if (!enabled_)
     return;
   CollectedWave *wave = wave_state(wf);
-  if (wave == nullptr)
+  if (wave == nullptr || (gated_ && !wave->timed))
     return;
 
   // A handful of paths retire an instruction without reaching the after hook:
@@ -569,7 +629,7 @@ void TimingCollector::after_execute(std::uint64_t /*pc*/, const Instruction &ins
   if (!enabled_)
     return;
   CollectedWave *wave = wave_state(wf);
-  if (wave == nullptr || !wave->has_pending)
+  if (wave == nullptr || !wave->has_pending || (gated_ && !wave->timed))
     return;
   emit_pending(*wave, wf, &inst);
 }
@@ -658,6 +718,100 @@ void TimingCollector::emit_pending(CollectedWave &wave, const amdgpu::Wavefront 
 
   std::lock_guard<std::mutex> guard(plane_mutex_);
   plane_.instruction(wave.compute_unit, wave.wave_slot, retired);
+}
+
+// -- Timing start (ROCJITSU_TIMING_START) ------------------------------------
+
+void TimingCollector::mark_untimed(amdgpu::Wavefront &wf) {
+  CollectedWave *wave = wave_state(wf);
+  if (wave == nullptr) {
+    attach(wf);
+    wave = wave_state(wf);
+  }
+  wave->timed = false;
+  wave->has_pending = false;
+  wave->pending_info = nullptr;
+}
+
+// -- Sampled-CU emulation (ROCJITSU_SAMPLED_CUS) -----------------------------
+
+bool TimingCollector::sampling_wanted(std::string_view kernel_name,
+                                      std::uint64_t workgroups) const {
+  return sampling_ && plane_.samples_dispatch(kernel_name, workgroups);
+}
+
+bool TimingCollector::keeps_workgroup(std::uint64_t workgroup, std::uint64_t relative) const {
+  return !sampling_ || plane_.keeps_workgroup(workgroup, relative);
+}
+
+void TimingCollector::dispatch_sampled(std::uint32_t dispatch_id, std::uint32_t queue_id,
+                                       const std::string &kernel_name) {
+  if (!sampling_)
+    return;
+  std::lock_guard<std::mutex> guard(dispatch_mutex_);
+  sampled_names_[packed(dispatch_id, queue_id)] = kernel_name;
+}
+
+void TimingCollector::wave_sampling(amdgpu::Wavefront &wf, bool sampled) {
+  if (!sampling_)
+    return;
+  CollectedWave *wave = wave_state(wf);
+  if (wave == nullptr) {
+    attach(wf);
+    wave = wave_state(wf);
+  }
+  wave->sampled = sampled;
+}
+
+void TimingCollector::workgroups_skipped(std::uint32_t dispatch_id, std::uint32_t queue_id,
+                                         std::uint64_t count) {
+  if (!sampling_ || !enabled_ || count == 0)
+    return;
+  {
+    // Only a dispatch the plane has open; one admitted before timing started
+    // is not.
+    std::lock_guard<std::mutex> guard(dispatch_mutex_);
+    if (announced_.count(packed(dispatch_id, queue_id)) == 0)
+      return;
+  }
+  std::lock_guard<std::mutex> guard(plane_mutex_);
+  plane_.note_skipped(dispatch_id, queue_id, count);
+}
+
+void TimingCollector::check_sampled(std::uint64_t pc, const Instruction &inst,
+                                    const amdgpu::Wavefront &wf) {
+  const StaticInstruction &info = static_info(pc, inst);
+  if (!info.denies_sampling)
+    return;
+  // Skipped workgroups have already been reported complete, so a sampled
+  // workgroup that waits for one of them would wait forever, and one that reads
+  // what another wrote reads data nobody produced. Neither can be undone here:
+  // stop (the default) so the driver re-runs with this kernel excluded.
+  std::string kernel = "?";
+  {
+    std::lock_guard<std::mutex> guard(dispatch_mutex_);
+    const auto found = sampled_names_.find(packed(wf.dispatch_id(), wf.queue_id()));
+    if (found != sampled_names_.end())
+      kernel = found->second;
+    if (!unsafe_reported_.insert(kernel).second)
+      return;
+  }
+  const SamplingConfig &config = plane_.sampling();
+  std::fprintf(stderr,
+               "rocjitsu: ROCJITSU_SAMPLED_CUS: kernel '%s' executes %s (pc %#llx) and cannot be "
+               "sampled%s\n",
+               kernel.c_str(), info.mnemonic.c_str(), static_cast<unsigned long long>(pc),
+               config.exit_on_unsafe ? "; exiting" : "");
+  if (!config.deny_log.empty()) {
+    if (std::FILE *log = std::fopen(config.deny_log.c_str(), "ae"); log != nullptr) {
+      std::fprintf(log, "%s\t%s\n", kernel.c_str(), info.mnemonic.c_str());
+      std::fclose(log);
+    }
+  }
+  if (config.exit_on_unsafe) {
+    std::fflush(nullptr);
+    std::_Exit(config.unsafe_exit_code);
+  }
 }
 
 } // namespace rocjitsu::timing

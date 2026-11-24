@@ -26,12 +26,14 @@
 #include "rocjitsu/vm/timing/inst_class.h"
 #include "rocjitsu/vm/timing/vocabulary.h"
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
 #include <span>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -66,6 +68,9 @@ struct StaticInstruction {
   /// it recovers is worth.
   RegisterRanges reads;
   RegisterRanges writes;
+  /// @brief ROCJITSU_SAMPLED_CUS: this instruction makes its kernel unsafe to
+  ///        sample (it can observe or wait for another workgroup).
+  bool denies_sampling = false;
 };
 
 /// @brief Everything the collector keeps on one wavefront.
@@ -101,6 +106,13 @@ struct CollectedWave final : rocjitsu::WavefrontState {
   /// narrowed the mask.
   std::uint32_t pending_active_lanes = 0;
   bool has_pending = false;
+  /// @brief ROCJITSU_TIMING_START: false for a wavefront of a dispatch that was
+  ///        admitted before timing started; such a wavefront never reaches the
+  ///        plane. Always true when no start kernel is configured.
+  bool timed = true;
+  /// @brief ROCJITSU_SAMPLED_CUS: the wavefront belongs to a sampled dispatch,
+  ///        so its instructions are checked against the deny list.
+  bool sampled = false;
 
   /// @brief Per-lane addresses of the instruction being reported.
   ///
@@ -155,6 +167,23 @@ public:
   /// @brief A barrier released @p waves together.
   void barrier_resolved(std::span<amdgpu::Wavefront *> waves);
 
+  // -- Sampled-CU emulation (ROCJITSU_SAMPLED_CUS) -------------------------
+  /// @brief Whether sampled-CU emulation is configured at all.
+  bool sampling() const { return sampling_; }
+  /// @brief Whether a dispatch of @p kernel_name with @p workgroups is sampled.
+  bool sampling_wanted(std::string_view kernel_name, std::uint64_t workgroups) const;
+  /// @brief Whether a sampled dispatch executes workgroup @p workgroup.
+  bool keeps_workgroup(std::uint64_t workgroup, std::uint64_t relative) const;
+  /// @brief A dispatch was admitted as sampled; remembered for reports.
+  void dispatch_sampled(std::uint32_t dispatch_id, std::uint32_t queue_id,
+                        const std::string &kernel_name);
+  /// @brief Mark @p wf as belonging (or not) to a sampled dispatch. Called for
+  ///        every dispatched wavefront while sampling is configured, before
+  ///        @ref wave_dispatched, whether or not timing has started.
+  void wave_sampling(amdgpu::Wavefront &wf, bool sampled);
+  /// @brief @p count workgroups of a dispatch were completed without executing.
+  void workgroups_skipped(std::uint32_t dispatch_id, std::uint32_t queue_id, std::uint64_t count);
+
   /// @brief About to execute @p inst at @p pc.
   void before_execute(std::uint64_t pc, const Instruction &inst, amdgpu::Wavefront &wf);
   /// @brief Just executed @p inst, which issued at the pc @ref before_execute saw.
@@ -189,15 +218,31 @@ private:
   ///        because the instruction that halted the wave is not a memory one.
   void emit_pending(CollectedWave &wave, const amdgpu::Wavefront &wf, const Instruction *inst);
 
+  /// @brief ROCJITSU_TIMING_START: a wavefront dispatched while timing is off.
+  void mark_untimed(amdgpu::Wavefront &wf);
+  /// @brief ROCJITSU_SAMPLED_CUS: check one instruction of a sampled wavefront.
+  void check_sampled(std::uint64_t pc, const Instruction &inst, const amdgpu::Wavefront &wf);
+
   /// @brief Pack a dispatch's two-part identity into one integer.
   static std::uint64_t packed(std::uint32_t dispatch_id, std::uint32_t queue_id) {
     return (static_cast<std::uint64_t>(queue_id) << 32) | dispatch_id;
   }
 
   TimingPlane &plane_;
-  /// @brief Sampled once. A disabled plane owns no compute units, so every
-  ///        entry point has to return before it indexes them.
-  bool enabled_ = false;
+  /// @brief Whether the hooks drive the plane. A disabled plane owns no compute
+  ///        units, so every entry point has to return before it indexes them.
+  ///
+  /// @details Sampled once from the plane, except with ROCJITSU_TIMING_START,
+  /// where it starts false and is set, once and only at a dispatch boundary,
+  /// by the first dispatch packet whose kernel name starts with the prefix.
+  /// The plane receives no call at all before that, so it holds no open
+  /// dispatch and no wavefront when timing starts.
+  std::atomic<bool> enabled_{false};
+  /// @brief ROCJITSU_TIMING_START is set (and the plane is enabled).
+  bool gated_ = false;
+  std::string start_prefix_;
+  /// @brief ROCJITSU_SAMPLED_CUS is on (and the plane is enabled).
+  bool sampling_ = false;
 
   /// @brief Serialises every call into the plane.
   ///
@@ -233,6 +278,13 @@ private:
   ///        than read from a packet, and so carrying no kernel name and no
   ///        workgroup count. A real packet replaces one of these.
   std::unordered_set<std::uint64_t> synthesized_;
+  /// @brief ROCJITSU_TIMING_START: dispatches admitted before timing started.
+  ///        Their wavefronts stay untimed even if they launch afterwards.
+  std::unordered_set<std::uint64_t> untimed_;
+  /// @brief ROCJITSU_SAMPLED_CUS: kernel name of each sampled dispatch, and the
+  ///        kernels already reported unsafe.
+  std::unordered_map<std::uint64_t, std::string> sampled_names_;
+  std::unordered_set<std::string> unsafe_reported_;
 };
 
 } // namespace rocjitsu::timing
